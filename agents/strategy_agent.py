@@ -392,7 +392,7 @@ class StrategyAgent(BaseAgent):
             max_hold = getattr(settings, 'scalp_hold_time_minutes', 30)
         elif trade_type == 'day_trade':
             target_pct = getattr(settings, 'target_profit_pct', 0.03)  # 3%
-            stop_pct = getattr(settings, 'stop_loss_pct', 0.015)  # 1.5%
+            stop_pct = getattr(settings, 'stop_loss_pct_day', 0.015)  # 1.5%
             max_hold = getattr(settings, 'max_hold_time_minutes', 120)
         else:  # swing
             target_pct = 0.50  # 50%
