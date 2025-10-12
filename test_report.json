@@ -3,54 +3,54 @@
     "test": "Service Initialization",
     "status": "PASS",
     "details": "All services initialized successfully",
-    "timestamp": "2025-10-12T12:05:05.332890"
+    "timestamp": "2025-10-12T12:18:48.899221"
   },
   {
     "test": "Alpaca API Connection",
-    "status": "FAIL",
-    "details": "Error: 'account_number'",
-    "timestamp": "2025-10-12T12:05:05.584646"
+    "status": "PASS",
+    "details": "Connected to Alpaca - Account: PA3C8GZJ8A4W, Buying Power: $127,351.80",
+    "timestamp": "2025-10-12T12:18:49.093733"
   },
   {
     "test": "Real Market Data (SPY/VIX/QQQ)",
-    "status": "FAIL",
-    "details": "Failed to fetch market data",
-    "timestamp": "2025-10-12T12:05:05.958219"
+    "status": "WARN",
+    "details": "No market data available (market may be closed - this is expected on weekends/holidays)",
+    "timestamp": "2025-10-12T12:18:49.577715"
   },
   {
     "test": "NewsAPI Integration",
     "status": "PASS",
     "details": "Fetched 5 real articles for AAPL. First headline: 'Apple Inc. (AAPL) Sued Over Workplace Discrimination...'",
-    "timestamp": "2025-10-12T12:05:06.085990"
+    "timestamp": "2025-10-12T12:18:49.905129"
   },
   {
     "test": "Sentiment Analysis (Real Data)",
     "status": "PASS",
     "details": "Overall: NEUTRAL (0.00), News: real, Market: real",
-    "timestamp": "2025-10-12T12:05:13.284143"
+    "timestamp": "2025-10-12T12:18:55.524494"
   },
   {
     "test": "Strategy Agent (AI Analysis)",
-    "status": "FAIL",
-    "details": "No analysis result",
-    "timestamp": "2025-10-12T12:05:13.284430"
+    "status": "PASS",
+    "details": "Recommendation: HOLD, Confidence: 60.0%, Risk: MEDIUM",
+    "timestamp": "2025-10-12T12:19:08.749976"
   },
   {
     "test": "Risk Manager Validation",
     "status": "WARN",
     "details": "Stock: False, Options: False - May be due to circuit breaker or position limits",
-    "timestamp": "2025-10-12T12:05:13.284637"
+    "timestamp": "2025-10-12T12:19:08.750268"
   },
   {
     "test": "Greeks Analysis",
     "status": "PASS",
     "details": "Greeks available - Delta: 0.650, Theta: -0.080, Vega: 0.150, Source: estimated",
-    "timestamp": "2025-10-12T12:05:13.285356"
+    "timestamp": "2025-10-12T12:19:08.751536"
   },
   {
     "test": "End-to-End Trading Flow",
     "status": "PASS",
     "details": "Flow executed but no BUY signal (Recommendation: NONE)",
-    "timestamp": "2025-10-12T12:05:17.909134"
+    "timestamp": "2025-10-12T12:19:13.965220"
   }
 ]

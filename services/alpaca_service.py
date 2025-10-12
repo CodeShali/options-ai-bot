@@ -47,6 +47,7 @@ class AlpacaService:
         try:
             account = await asyncio.to_thread(self.trading_client.get_account)
             return {
+                "account_number": account.account_number,
                 "equity": float(account.equity),
                 "cash": float(account.cash),
                 "buying_power": float(account.buying_power),
@@ -55,6 +56,7 @@ class AlpacaService:
                 "trading_blocked": account.trading_blocked,
                 "account_blocked": account.account_blocked,
                 "daytrade_count": account.daytrade_count,
+                "status": account.status,
             }
         except Exception as e:
             logger.error(f"Error getting account info: {e}")
