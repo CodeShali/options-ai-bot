@@ -926,43 +926,122 @@ async def simulate_command(interaction: discord.Interaction):
         # Run simulation
         results = await sim_service.run_full_simulation()
         
-        # Create results embed
+        # Determine system health
+        success_rate = results['success_rate']
+        if success_rate >= 90:
+            health = "EXCELLENT"
+            color = discord.Color.green()
+        elif success_rate >= 75:
+            health = "GOOD"
+            color = discord.Color.blue()
+        elif success_rate >= 60:
+            health = "FAIR"
+            color = discord.Color.orange()
+        else:
+            health = "NEEDS ATTENTION"
+            color = discord.Color.red()
+        
+        # Create main summary embed
         embed = discord.Embed(
-            title="🧪 System Simulation Results",
-            description=f"Completed {results['total_tests']} tests in {results['duration_seconds']:.1f}s",
-            color=discord.Color.green() if results['success_rate'] >= 80 else discord.Color.orange()
-        )
-        
-        # Summary
-        embed.add_field(
-            name="📊 Summary",
-            value=(
-                f"✅ Passed: {results['passed']}\n"
-                f"❌ Failed: {results['failed']}\n"
-                f"📈 Success Rate: {results['success_rate']:.1f}%"
+            title="🧪 SYSTEM SIMULATION RESULTS",
+            description=(
+                f"**━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━**\n"
+                f"## 📊 SUMMARY\n"
+                f"✅ Passed: **{results['passed']}/{results['total_tests']}** ({success_rate:.1f}%)\n"
+                f"❌ Failed: **{results['failed']}/{results['total_tests']}**\n"
+                f"⏱️ Duration: **{results['duration_seconds']:.1f}s**\n"
+                f"🎯 System Health: **{health}**\n"
+                f"**━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━**"
             ),
-            inline=False
+            color=color,
+            timestamp=datetime.now()
         )
         
-        # Show each test result
-        for i, test in enumerate(results['results'][:10], 1):  # Show first 10
-            status_emoji = "✅" if test['status'] == 'PASSED' else "❌"
-            details = test.get('details', test.get('error', 'No details'))
+        # Group tests by category
+        trade_type_tests = []
+        sentiment_tests = []
+        other_tests = []
+        
+        for test in results['results']:
+            test_name = test['test']
+            if 'Scalping' in test_name or 'Day Trading' in test_name or 'Swing Trading' in test_name:
+                trade_type_tests.append(test)
+            elif 'Sentiment' in test_name and ('Boost' in test_name or 'Block' in test_name):
+                sentiment_tests.append(test)
+            else:
+                other_tests.append(test)
+        
+        # Show Trade Type Tests
+        if trade_type_tests:
+            trade_type_text = ""
+            for test in trade_type_tests:
+                status_emoji = "✅" if test['status'] == 'PASSED' else "❌"
+                details = test.get('details', test.get('error', 'No details'))
+                # Truncate details to fit
+                if len(details) > 200:
+                    details = details[:197] + "..."
+                trade_type_text += f"{status_emoji} **{test['test']}**\n{details}\n\n"
+            
+            if trade_type_text:
+                embed.add_field(
+                    name="🎯 TRADE TYPE TESTS",
+                    value=trade_type_text[:1024],
+                    inline=False
+                )
+        
+        # Show Sentiment Impact Tests
+        if sentiment_tests:
+            sentiment_text = ""
+            for test in sentiment_tests:
+                status_emoji = "✅" if test['status'] == 'PASSED' else "❌"
+                details = test.get('details', test.get('error', 'No details'))
+                if len(details) > 200:
+                    details = details[:197] + "..."
+                sentiment_text += f"{status_emoji} **{test['test']}**\n{details}\n\n"
+            
+            if sentiment_text:
+                embed.add_field(
+                    name="📰 SENTIMENT IMPACT TESTS",
+                    value=sentiment_text[:1024],
+                    inline=False
+                )
+        
+        # Show other tests (condensed)
+        if other_tests:
+            other_text = ""
+            for test in other_tests[:5]:  # Show first 5
+                status_emoji = "✅" if test['status'] == 'PASSED' else "❌"
+                other_text += f"{status_emoji} {test['test']}\n"
+            
+            if len(other_tests) > 5:
+                other_text += f"\n_...and {len(other_tests)-5} more tests_"
             
             embed.add_field(
-                name=f"{status_emoji} Test {i}: {test['test']}",
-                value=f"{details[:100]}...",
+                name="🔧 OTHER TESTS",
+                value=other_text,
                 inline=False
             )
         
-        if len(results['results']) > 10:
+        # Add recommendations
+        if results['failed'] > 0:
+            failed_tests = [t['test'] for t in results['results'] if t['status'] == 'FAILED']
+            recommendations = "⚠️ **Action Required:**\n"
+            for test_name in failed_tests[:3]:
+                recommendations += f"• Fix: {test_name}\n"
+            
             embed.add_field(
-                name="ℹ️ Note",
-                value=f"Showing 10 of {len(results['results'])} tests. Check logs for full results.",
+                name="💡 RECOMMENDATIONS",
+                value=recommendations,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="💡 RECOMMENDATIONS",
+                value="✅ All systems operational! Ready for trading.",
                 inline=False
             )
         
-        embed.set_footer(text=f"Simulation completed at {results['timestamp']}")
+        embed.set_footer(text=f"Simulation completed | {results['total_tests']} tests")
         
         await interaction.followup.send(embed=embed)
         
