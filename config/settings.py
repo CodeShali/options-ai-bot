@@ -118,6 +118,40 @@ class Settings(BaseSettings):
         default=5,
         description="How often to scan for opportunities (in minutes)"
     )
+    scan_interval: int = Field(
+        default=300,
+        description="Scan interval in seconds (300 = 5 min, 60 = 1 min for aggressive mode)"
+    )
+    
+    # Aggressive Trading Mode Settings
+    aggressive_mode: bool = Field(
+        default=False,
+        description="Enable aggressive trading mode (1-minute scanning, day trading)"
+    )
+    scalp_target_pct: float = Field(
+        default=0.015,
+        description="Profit target for scalp trades (1.5%)"
+    )
+    tight_stop_pct: float = Field(
+        default=0.01,
+        description="Stop loss for scalp trades (1%)"
+    )
+    scalp_hold_time_minutes: int = Field(
+        default=30,
+        description="Maximum hold time for scalp trades"
+    )
+    target_profit_pct: float = Field(
+        default=0.03,
+        description="Profit target for day trades (3%)"
+    )
+    stop_loss_pct_day: float = Field(
+        default=0.015,
+        description="Stop loss for day trades (1.5%)"
+    )
+    max_hold_time_minutes: int = Field(
+        default=120,
+        description="Maximum hold time for day trades"
+    )
     
     # FastAPI Configuration
     api_host: str = Field(default="0.0.0.0", description="FastAPI host")
@@ -171,3 +205,42 @@ def update_trading_mode(mode: Literal["paper", "live"]) -> None:
         settings.alpaca_base_url = "https://api.alpaca.markets"
     else:
         settings.alpaca_base_url = "https://paper-api.alpaca.markets"
+
+
+def enable_aggressive_mode() -> None:
+    """
+    Enable aggressive trading mode with 1-minute scanning.
+    Updates scan interval and trading parameters for day trading/scalping.
+    """
+    global settings
+    settings.aggressive_mode = True
+    settings.scan_interval = 60  # 1 minute
+    settings.scan_interval_minutes = 1
+    settings.max_daily_loss = 500  # Tighter circuit breaker
+    settings.max_open_positions = 5
+    settings.max_position_size = 2000
+    
+    # Update options for scalping
+    settings.options_min_dte = 0  # Allow 0 DTE
+    settings.options_max_dte = 7  # Max 1 week
+    settings.options_max_premium = 500
+    settings.options_max_contracts = 2
+
+
+def disable_aggressive_mode() -> None:
+    """
+    Disable aggressive mode and return to conservative swing trading.
+    """
+    global settings
+    settings.aggressive_mode = False
+    settings.scan_interval = 300  # 5 minutes
+    settings.scan_interval_minutes = 5
+    settings.max_daily_loss = 1000
+    settings.max_open_positions = 5
+    settings.max_position_size = 5000
+    
+    # Reset options to swing trading
+    settings.options_min_dte = 30
+    settings.options_max_dte = 45
+    settings.options_max_premium = 500
+    settings.options_max_contracts = 2

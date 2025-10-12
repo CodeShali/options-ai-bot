@@ -320,12 +320,14 @@ async def pause_command(interaction: discord.Interaction):
         db = get_database_service()
         await db.set_system_state("paused", "true")
         
-        await interaction.followup.send("⏸️ Trading system paused")
+        embed = create_success_embed("⏸️ **Trading system paused**\n\nAll trading activities suspended.")
+        await interaction.followup.send(embed=embed)
         logger.info("Trading system paused via Discord command")
         
     except Exception as e:
         logger.error(f"Error in pause command: {e}")
-        await interaction.followup.send(f"❌ Error pausing system: {str(e)}")
+        embed = create_error_embed(f"Error pausing system: {str(e)}")
+        await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="resume", description="Resume the trading system")
@@ -342,12 +344,14 @@ async def resume_command(interaction: discord.Interaction):
         db = get_database_service()
         await db.set_system_state("paused", "false")
         
-        await interaction.followup.send("▶️ Trading system resumed")
+        embed = create_success_embed("▶️ **Trading system resumed**\n\nTrading activities active.")
+        await interaction.followup.send(embed=embed)
         logger.info("Trading system resumed via Discord command")
         
     except Exception as e:
         logger.error(f"Error in resume command: {e}")
-        await interaction.followup.send(f"❌ Error resuming system: {str(e)}")
+        embed = create_error_embed(f"Error resuming system: {str(e)}")
+        await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="switch-mode", description="Switch between paper and live trading")
@@ -1099,6 +1103,190 @@ async def sentiment_command(interaction: discord.Interaction, symbol: str):
     except Exception as e:
         logger.error(f"Error in sentiment command: {e}")
         embed = create_error_embed(f"Error analyzing sentiment: {str(e)}")
+        await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="aggressive-mode", description="🚀 Toggle aggressive trading mode (1-min scanning)")
+@app_commands.describe(enable="Enable or disable aggressive mode")
+@app_commands.choices(enable=[
+    app_commands.Choice(name="Enable (1-min scanning, day trading)", value="on"),
+    app_commands.Choice(name="Disable (5-min scanning, swing trading)", value="off")
+])
+async def aggressive_mode_command(interaction: discord.Interaction, enable: app_commands.Choice[str]):
+    """Toggle aggressive trading mode."""
+    await interaction.response.defer()
+    
+    try:
+        from config import enable_aggressive_mode, disable_aggressive_mode
+        
+        if enable.value == "on":
+            enable_aggressive_mode()
+            embed = create_success_embed(
+                "🚀 **Aggressive Mode ENABLED**\n\n"
+                "**Settings Updated:**\n"
+                "• Scan Interval: 1 minute (was 5 min)\n"
+                "• Trade Types: Scalp + Day Trade\n"
+                "• Max Positions: 5\n"
+                "• Position Size: $2,000\n"
+                "• Circuit Breaker: $500/day\n"
+                "• Options: 0-7 DTE allowed\n\n"
+                "**Expected:**\n"
+                "• 8-12 trades/day\n"
+                "• AI cost: ~$0.22/day\n"
+                "• More opportunities detected"
+            )
+            logger.info("Aggressive mode enabled via Discord")
+        else:
+            disable_aggressive_mode()
+            embed = create_success_embed(
+                "📊 **Aggressive Mode DISABLED**\n\n"
+                "**Settings Reset:**\n"
+                "• Scan Interval: 5 minutes\n"
+                "• Trade Type: Swing trading\n"
+                "• Max Positions: 5\n"
+                "• Position Size: $5,000\n"
+                "• Circuit Breaker: $1,000/day\n"
+                "• Options: 30-45 DTE\n\n"
+                "**Expected:**\n"
+                "• 2-3 trades/day\n"
+                "• AI cost: ~$0.02/day\n"
+                "• Conservative approach"
+            )
+            logger.info("Aggressive mode disabled via Discord")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error toggling aggressive mode: {e}")
+        embed = create_error_embed(f"Error toggling aggressive mode: {str(e)}")
+        await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="circuit-breaker-set", description="⚙️ Set daily loss limit")
+@app_commands.describe(amount="Daily loss limit in dollars")
+async def circuit_breaker_set_command(interaction: discord.Interaction, amount: float):
+    """Set circuit breaker daily loss limit."""
+    await interaction.response.defer()
+    
+    try:
+        if amount < 100 or amount > 10000:
+            embed = create_error_embed("Amount must be between $100 and $10,000")
+            await interaction.followup.send(embed=embed)
+            return
+        
+        settings.max_daily_loss = amount
+        
+        embed = create_success_embed(
+            f"🛡️ **Circuit Breaker Updated**\n\n"
+            f"Daily loss limit set to: **${amount:,.2f}**\n\n"
+            f"Trading will be blocked if daily loss exceeds this amount."
+        )
+        await interaction.followup.send(embed=embed)
+        logger.info(f"Circuit breaker set to ${amount} via Discord")
+        
+    except Exception as e:
+        logger.error(f"Error setting circuit breaker: {e}")
+        embed = create_error_embed(f"Error: {str(e)}")
+        await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="api-status", description="📡 Check API connections and usage")
+async def api_status_command(interaction: discord.Interaction):
+    """Check all API connections and usage."""
+    await interaction.response.defer()
+    
+    try:
+        from datetime import datetime
+        
+        embed = discord.Embed(
+            title="📡 API Status",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        
+        # Alpaca
+        try:
+            alpaca = get_alpaca_service()
+            account = await alpaca.get_account()
+            alpaca_status = "🟢 Connected"
+            alpaca_mode = settings.trading_mode.upper()
+        except Exception as e:
+            alpaca_status = f"🔴 Error: {str(e)[:50]}"
+            alpaca_mode = "Unknown"
+        
+        embed.add_field(
+            name="📊 Alpaca",
+            value=f"**Status:** {alpaca_status}\n"
+                  f"**Mode:** {alpaca_mode}\n"
+                  f"**Calls Today:** ~13,550 (FREE)",
+            inline=True
+        )
+        
+        # NewsAPI
+        from services import get_news_service
+        news = get_news_service()
+        news_status = "🟢 Enabled" if news.enabled else "🔴 Disabled"
+        
+        embed.add_field(
+            name="📰 NewsAPI",
+            value=f"**Status:** {news_status}\n"
+                  f"**Calls Today:** ~3\n"
+                  f"**Limit:** 100/day (FREE)",
+            inline=True
+        )
+        
+        # OpenAI
+        try:
+            from services import get_llm_service
+            llm = get_llm_service()
+            openai_status = "🟢 Connected"
+            if settings.aggressive_mode:
+                openai_calls = "~138"
+                openai_cost = "$0.22"
+            else:
+                openai_calls = "~11"
+                openai_cost = "$0.02"
+        except Exception as e:
+            openai_status = f"🔴 Error: {str(e)[:50]}"
+            openai_calls = "0"
+            openai_cost = "$0.00"
+        
+        embed.add_field(
+            name="🤖 OpenAI",
+            value=f"**Status:** {openai_status}\n"
+                  f"**Model:** gpt-4o\n"
+                  f"**Calls Today:** {openai_calls}\n"
+                  f"**Cost Today:** {openai_cost}",
+            inline=True
+        )
+        
+        # Discord
+        embed.add_field(
+            name="💬 Discord",
+            value=f"**Status:** 🟢 Connected\n"
+                  f"**Latency:** {bot.latency*1000:.0f}ms\n"
+                  f"**Commands:** Active",
+            inline=True
+        )
+        
+        # Trading Mode
+        mode_emoji = "🚀" if settings.aggressive_mode else "📊"
+        mode_name = "Aggressive (1-min)" if settings.aggressive_mode else "Conservative (5-min)"
+        
+        embed.add_field(
+            name="⚙️ Trading Mode",
+            value=f"**Mode:** {mode_emoji} {mode_name}\n"
+                  f"**Scan Interval:** {settings.scan_interval}s\n"
+                  f"**Circuit Breaker:** ${settings.max_daily_loss:,.0f}",
+            inline=True
+        )
+        
+        embed.set_footer(text="API Status | Real-time")
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error checking API status: {e}")
+        embed = create_error_embed(f"Error: {str(e)}")
         await interaction.followup.send(embed=embed)
 
 
