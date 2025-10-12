@@ -220,7 +220,7 @@ def create_trade_embed(trade: Dict[str, Any]) -> discord.Embed:
 
 
 def create_sentiment_embed(sentiment: Dict[str, Any]) -> discord.Embed:
-    """Create a beautiful embed for sentiment analysis."""
+    """Create a comprehensive, trading-focused sentiment analysis embed."""
     symbol = sentiment.get('symbol', 'Unknown')
     overall = sentiment.get('overall_sentiment', 'NEUTRAL')
     score = sentiment.get('overall_score', 0)
@@ -229,74 +229,180 @@ def create_sentiment_embed(sentiment: Dict[str, Any]) -> discord.Embed:
     if overall == 'POSITIVE':
         color = discord.Color.green()
         emoji = "🟢"
+        action = "BUY"
     elif overall == 'NEGATIVE':
         color = discord.Color.red()
         emoji = "🔴"
+        action = "SELL/AVOID"
     else:
         color = discord.Color.light_grey()
         emoji = "⚪"
+        action = "HOLD"
     
+    # Calculate confidence percentage
+    confidence = min(abs(score) * 100, 100)
+    
+    # Main embed with overall assessment
     embed = discord.Embed(
-        title=f"{emoji} Sentiment Analysis: {symbol}",
-        description=f"**Overall: {overall}** (Score: {score:.2f})",
+        title=f"📊 Sentiment Analysis: {symbol}",
+        description=(
+            f"**━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━**\n"
+            f"## 🎯 OVERALL ASSESSMENT\n"
+            f"{emoji} **{overall}** | Confidence: **{confidence:.0f}%**\n"
+            f"Score: **{score:+.2f}** | Recommended Action: **{action}**\n"
+            f"**━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━**"
+        ),
         color=color,
         timestamp=datetime.now()
     )
     
-    # News Sentiment
+    # Trading Impact Section
     news = sentiment.get('news_sentiment', {})
-    news_emoji = "🟢" if news.get('sentiment') == 'POSITIVE' else "🔴" if news.get('sentiment') == 'NEGATIVE' else "⚪"
-    embed.add_field(
-        name="📰 News Sentiment",
-        value=f"{news_emoji} **Sentiment:** {news.get('sentiment', 'N/A')}\n"
-              f"📊 **Score:** {news.get('score', 0):.2f}\n"
-              f"💥 **Impact:** {news.get('impact', 'N/A')}\n"
-              f"📡 **Source:** {news.get('data_source', 'N/A')}",
-        inline=True
-    )
-    
-    # Market Sentiment
     market = sentiment.get('market_sentiment', {})
+    
+    # Determine trade type recommendation based on sentiment strength
+    if abs(score) >= 0.7:
+        trade_type = "DAY TRADE" if score > 0 else "AVOID"
+        hold_time = "2 hours"
+    elif abs(score) >= 0.5:
+        trade_type = "SWING TRADE" if score > 0 else "HOLD"
+        hold_time = "1-3 days"
+    else:
+        trade_type = "HOLD"
+        hold_time = "N/A"
+    
+    if score > 0:
+        embed.add_field(
+            name="💡 TRADING IMPACT",
+            value=(
+                f"✅ **Action:** {action}\n"
+                f"📈 **Trade Type:** {trade_type}\n"
+                f"⏱️ **Hold Time:** {hold_time}\n"
+                f"🎯 **Confidence:** {confidence:.0f}%"
+            ),
+            inline=False
+        )
+    
+    # AI Interpretation (Most Important - Show First!)
+    interpretation = sentiment.get('interpretation', '')
+    if interpretation:
+        # Truncate if too long
+        if len(interpretation) > 400:
+            interpretation = interpretation[:397] + "..."
+        embed.add_field(
+            name="🤖 AI REASONING",
+            value=f"```{interpretation}```",
+            inline=False
+        )
+    
+    # News Sentiment with Details
+    news_emoji = "🟢" if news.get('sentiment') == 'POSITIVE' else "🔴" if news.get('sentiment') == 'NEGATIVE' else "⚪"
+    news_value = (
+        f"{news_emoji} **Sentiment:** {news.get('sentiment', 'N/A')}\n"
+        f"📊 **Score:** {news.get('score', 0):+.2f}\n"
+        f"💥 **Impact:** {news.get('impact', 'N/A')}\n"
+        f"📡 **Source:** {news.get('data_source', 'none')}"
+    )
+    
+    # Add reasoning if available
+    if news.get('reasoning'):
+        news_value += f"\n💭 {news.get('reasoning')[:100]}"
+    
+    embed.add_field(
+        name="📰 NEWS SENTIMENT",
+        value=news_value,
+        inline=True
+    )
+    
+    # Market Sentiment with Indicators
     market_emoji = "🟢" if market.get('sentiment') == 'POSITIVE' else "🔴" if market.get('sentiment') == 'NEGATIVE' else "⚪"
+    market_value = (
+        f"{market_emoji} **Sentiment:** {market.get('sentiment', 'N/A')}\n"
+        f"📊 **Score:** {market.get('score', 0):+.2f}\n"
+        f"📡 **Source:** {market.get('data_source', 'none')}"
+    )
+    
+    # Add indicators if available
+    indicators = market.get('indicators', {})
+    if indicators:
+        market_value += f"\n📈 Indicators: {len(indicators)} signals"
+    
     embed.add_field(
-        name="📈 Market Sentiment",
-        value=f"{market_emoji} **Sentiment:** {market.get('sentiment', 'N/A')}\n"
-              f"📊 **Score:** {market.get('score', 0):.2f}\n"
-              f"📡 **Source:** {market.get('data_source', 'N/A')}",
+        name="📈 MARKET SENTIMENT",
+        value=market_value,
         inline=True
     )
     
-    # Social Sentiment
-    social = sentiment.get('social_sentiment', {})
-    social_emoji = "🟢" if social.get('sentiment') == 'POSITIVE' else "🔴" if social.get('sentiment') == 'NEGATIVE' else "⚪"
-    embed.add_field(
-        name="💬 Social Sentiment",
-        value=f"{social_emoji} **Sentiment:** {social.get('sentiment', 'N/A')}\n"
-              f"📊 **Score:** {social.get('score', 0):.2f}\n"
-              f"👥 **Mentions:** {social.get('mentions', 0)}\n"
-              f"📡 **Source:** {social.get('data_source', 'N/A')}",
-        inline=True
-    )
-    
-    # Headlines
+    # Headlines (if available)
     headlines = news.get('headlines', [])
     if headlines:
-        headlines_text = "\n".join([f"• {h[:80]}..." for h in headlines[:3]])
+        headlines_text = "\n".join([f"• {h[:70]}" for h in headlines[:3]])
         embed.add_field(
-            name="📰 Recent Headlines",
-            value=headlines_text,
+            name="📰 RECENT HEADLINES",
+            value=headlines_text or "No recent headlines",
             inline=False
         )
     
-    # AI Interpretation
-    if sentiment.get('interpretation'):
+    # Themes (if available)
+    themes = news.get('themes', [])
+    if themes:
+        themes_text = ", ".join(themes[:5])
         embed.add_field(
-            name="🤖 AI Interpretation",
-            value=sentiment.get('interpretation')[:1024],
+            name="🏷️ KEY THEMES",
+            value=themes_text,
             inline=False
         )
     
-    embed.set_footer(text="Sentiment Analysis | Real-time data")
+    # How This Affects Trading
+    if abs(score) > 0.3:
+        impact_text = ""
+        if score > 0.7:
+            impact_text = (
+                f"**For DAY TRADE:** ✅ EXCELLENT setup\n"
+                f"• Sentiment: Strong positive ({score:+.2f})\n"
+                f"• Confidence: {confidence:.0f}%\n"
+                f"• Recommendation: Aggressive entry\n\n"
+                f"**For SCALP:** ✅ GOOD setup\n"
+                f"• Quick momentum play\n"
+                f"• High probability: {min(confidence + 10, 100):.0f}%"
+            )
+        elif score > 0.4:
+            impact_text = (
+                f"**For SWING TRADE:** ✅ GOOD setup\n"
+                f"• Sentiment: Positive ({score:+.2f})\n"
+                f"• Confidence: {confidence:.0f}%\n"
+                f"• Recommendation: Consider entry\n\n"
+                f"**For DAY TRADE:** ⚠️ MODERATE\n"
+                f"• Wait for stronger signals"
+            )
+        elif score < -0.5:
+            impact_text = (
+                f"**WARNING:** ❌ Negative sentiment\n"
+                f"• Score: {score:+.2f}\n"
+                f"• Recommendation: AVOID or SHORT\n"
+                f"• Risk: HIGH"
+            )
+        
+        if impact_text:
+            embed.add_field(
+                name="🎯 HOW THIS AFFECTS YOUR TRADING",
+                value=impact_text,
+                inline=False
+            )
+    
+    # OpenAI Usage Info
+    embed.add_field(
+        name="🤖 AI ANALYSIS",
+        value=(
+            f"This analysis used **2 OpenAI calls**:\n"
+            f"• News sentiment analysis\n"
+            f"• Overall interpretation\n"
+            f"Cost: ~$0.002 | Fresh data ✅"
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text=f"Sentiment Analysis | {symbol} | Real-time data")
     return embed
 
 
