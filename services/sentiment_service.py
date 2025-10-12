@@ -15,11 +15,21 @@ class SentimentService:
     def __init__(self):
         """Initialize sentiment service."""
         self.llm = None  # Will be set later to avoid circular import
+        self.alpaca = None  # Will be set later for market data
+        self.news = None  # Will be set later for news data
         logger.info("Sentiment service initialized")
     
     def set_llm(self, llm_service):
         """Set LLM service for sentiment analysis."""
         self.llm = llm_service
+    
+    def set_alpaca(self, alpaca_service):
+        """Set Alpaca service for market data."""
+        self.alpaca = alpaca_service
+    
+    def set_news(self, news_service):
+        """Set News service for news data."""
+        self.news = news_service
     
     async def analyze_symbol_sentiment(self, symbol: str) -> Dict[str, Any]:
         """
@@ -93,21 +103,39 @@ class SentimentService:
         Uses news APIs and AI to analyze recent news articles.
         """
         try:
-            # Mock news headlines (replace with actual news API)
-            mock_headlines = [
-                f"{symbol} reports strong quarterly earnings",
-                f"Analysts upgrade {symbol} to buy rating",
-                f"{symbol} announces new product launch",
-                f"Market volatility affects {symbol} stock",
-                f"{symbol} CEO discusses growth strategy"
-            ]
+            headlines = []
+            data_source = "mock"
+            
+            # Try to get real news if available
+            if self.news:
+                try:
+                    real_headlines = await self.news.get_headlines(symbol, max_headlines=10)
+                    if real_headlines:
+                        headlines = real_headlines
+                        data_source = "real"
+                        logger.info(f"Using {len(headlines)} real news headlines for {symbol}")
+                except Exception as e:
+                    logger.warning(f"Error fetching real news, using mock: {e}")
+            
+            # If no real news available, return neutral sentiment
+            if not headlines:
+                logger.warning(f"No news available for {symbol}, returning neutral sentiment")
+                return {
+                    "score": 0.0,
+                    "sentiment": "NEUTRAL",
+                    "themes": [],
+                    "impact": "LOW",
+                    "reasoning": "No recent news available",
+                    "headlines": [],
+                    "data_source": "none"
+                }
             
             # Use LLM to analyze headlines
             if self.llm:
                 prompt = f"""Analyze the sentiment of these recent news headlines for {symbol}:
 
 Headlines:
-{chr(10).join(f'- {h}' for h in mock_headlines)}
+{chr(10).join(f'- {h}' for h in headlines)}
 
 Provide:
 1. Overall sentiment score (-1.0 to 1.0, where -1 is very negative, 0 is neutral, 1 is very positive)
@@ -138,30 +166,45 @@ Format as JSON:
                         "themes": sentiment_data.get("themes", []),
                         "impact": sentiment_data.get("impact", "MEDIUM"),
                         "reasoning": sentiment_data.get("reasoning", ""),
-                        "headlines": mock_headlines
+                        "headlines": headlines[:5],  # Show first 5
+                        "data_source": data_source
                     }
                 except json.JSONDecodeError:
-                    # Fallback if JSON parsing fails
-                    return self._mock_news_sentiment(symbol)
+                    # Fallback to neutral if JSON parsing fails
+                    logger.warning(f"Failed to parse LLM response for {symbol}, returning neutral")
+                    return {
+                        "score": 0.0,
+                        "sentiment": "NEUTRAL",
+                        "themes": [],
+                        "impact": "MEDIUM",
+                        "reasoning": "Unable to analyze sentiment",
+                        "headlines": headlines[:5],
+                        "data_source": data_source
+                    }
             else:
-                return self._mock_news_sentiment(symbol)
+                # No LLM available
+                logger.warning("No LLM service available for sentiment analysis")
+                return {
+                    "score": 0.0,
+                    "sentiment": "NEUTRAL",
+                    "themes": [],
+                    "impact": "MEDIUM",
+                    "reasoning": "LLM service not available",
+                    "headlines": headlines[:5],
+                    "data_source": data_source
+                }
                 
         except Exception as e:
             logger.error(f"Error getting news sentiment: {e}")
-            return self._mock_news_sentiment(symbol)
-    
-    def _mock_news_sentiment(self, symbol: str) -> Dict[str, Any]:
-        """Mock news sentiment for testing."""
-        import random
-        score = random.uniform(-0.3, 0.7)  # Slightly positive bias
-        return {
-            "score": score,
-            "sentiment": self._score_to_label(score),
-            "themes": ["earnings", "growth", "market"],
-            "impact": "MEDIUM",
-            "reasoning": "Mixed news with slightly positive outlook",
-            "headlines": [f"Recent news about {symbol}"]
-        }
+            return {
+                "score": 0.0,
+                "sentiment": "NEUTRAL",
+                "themes": [],
+                "impact": "LOW",
+                "reasoning": f"Error: {str(e)}",
+                "headlines": [],
+                "data_source": "error"
+            }
     
     async def _get_market_sentiment(self) -> Dict[str, Any]:
         """
@@ -170,46 +213,126 @@ Format as JSON:
         Analyzes major indices, VIX, market breadth, etc.
         """
         try:
-            # Mock market indicators (replace with actual market data)
-            mock_indicators = {
-                "spy_change": 0.5,  # S&P 500 change %
-                "vix": 15.2,  # Volatility index
-                "advance_decline": 1.3,  # Advancing vs declining stocks
-                "new_highs_lows": 2.1  # New highs vs new lows
-            }
+            indicators = {}
+            
+            # Get real market data if Alpaca is available
+            if self.alpaca:
+                try:
+                    # Get SPY (S&P 500) data
+                    spy_bars = await self.alpaca.get_bars("SPY", timeframe="1Day", limit=2)
+                    if spy_bars and len(spy_bars) >= 2:
+                        current_spy = spy_bars[-1]
+                        prev_spy = spy_bars[-2]
+                        spy_change = ((current_spy['close'] - prev_spy['close']) / prev_spy['close']) * 100
+                        indicators["spy_change"] = spy_change
+                        indicators["spy_price"] = current_spy['close']
+                    else:
+                        indicators["spy_change"] = 0.0
+                    
+                    # Get VIX data
+                    try:
+                        vix_bars = await self.alpaca.get_bars("VIX", timeframe="1Day", limit=1)
+                        if vix_bars:
+                            indicators["vix"] = vix_bars[-1]['close']
+                        else:
+                            indicators["vix"] = 20.0  # Neutral default
+                    except:
+                        indicators["vix"] = 20.0  # Neutral default if VIX not available
+                    
+                    # Get QQQ (Nasdaq) for tech sentiment
+                    try:
+                        qqq_bars = await self.alpaca.get_bars("QQQ", timeframe="1Day", limit=2)
+                        if qqq_bars and len(qqq_bars) >= 2:
+                            current_qqq = qqq_bars[-1]
+                            prev_qqq = qqq_bars[-2]
+                            qqq_change = ((current_qqq['close'] - prev_qqq['close']) / prev_qqq['close']) * 100
+                            indicators["qqq_change"] = qqq_change
+                        else:
+                            indicators["qqq_change"] = 0.0
+                    except:
+                        indicators["qqq_change"] = 0.0
+                    
+                    # Calculate advance/decline ratio (simplified using SPY vs QQQ)
+                    if "spy_change" in indicators and "qqq_change" in indicators:
+                        # If both positive, strong breadth
+                        if indicators["spy_change"] > 0 and indicators["qqq_change"] > 0:
+                            indicators["advance_decline"] = 1.5
+                        elif indicators["spy_change"] < 0 and indicators["qqq_change"] < 0:
+                            indicators["advance_decline"] = 0.5
+                        else:
+                            indicators["advance_decline"] = 1.0
+                    else:
+                        indicators["advance_decline"] = 1.0
+                    
+                    # Estimate new highs/lows based on momentum
+                    avg_change = (indicators.get("spy_change", 0) + indicators.get("qqq_change", 0)) / 2
+                    if avg_change > 1.0:
+                        indicators["new_highs_lows"] = 2.0
+                    elif avg_change < -1.0:
+                        indicators["new_highs_lows"] = 0.5
+                    else:
+                        indicators["new_highs_lows"] = 1.0
+                    
+                    logger.info(f"Real market data: SPY {indicators.get('spy_change', 0):.2f}%, VIX {indicators.get('vix', 0):.1f}")
+                    
+                except Exception as e:
+                    logger.error(f"Error fetching real market data: {e}")
+                    # Return neutral if can't get real data
+                    return {
+                        "score": 0.0,
+                        "sentiment": "NEUTRAL",
+                        "indicators": {},
+                        "reasoning": "Unable to fetch market data",
+                        "data_source": "error"
+                    }
+            else:
+                # No Alpaca service available
+                logger.error("Alpaca service not available for market data")
+                return {
+                    "score": 0.0,
+                    "sentiment": "NEUTRAL",
+                    "indicators": {},
+                    "reasoning": "Alpaca service not configured",
+                    "data_source": "none"
+                }
             
             # Calculate market sentiment score
             score = 0.0
             
             # SPY positive = bullish
-            if mock_indicators["spy_change"] > 0:
+            spy_change = indicators.get("spy_change", 0)
+            if spy_change > 0:
                 score += 0.3
-            elif mock_indicators["spy_change"] < -1:
+            elif spy_change < -1:
                 score -= 0.3
             
             # Low VIX = bullish
-            if mock_indicators["vix"] < 20:
+            vix = indicators.get("vix", 20)
+            if vix < 20:
                 score += 0.2
-            elif mock_indicators["vix"] > 30:
+            elif vix > 30:
                 score -= 0.3
             
             # More advances = bullish
-            if mock_indicators["advance_decline"] > 1.5:
+            advance_decline = indicators.get("advance_decline", 1.0)
+            if advance_decline > 1.5:
                 score += 0.3
-            elif mock_indicators["advance_decline"] < 0.7:
+            elif advance_decline < 0.7:
                 score -= 0.3
             
             # More new highs = bullish
-            if mock_indicators["new_highs_lows"] > 1.5:
+            new_highs_lows = indicators.get("new_highs_lows", 1.0)
+            if new_highs_lows > 1.5:
                 score += 0.2
-            elif mock_indicators["new_highs_lows"] < 0.7:
+            elif new_highs_lows < 0.7:
                 score -= 0.2
             
             return {
                 "score": max(-1.0, min(1.0, score)),
                 "sentiment": self._score_to_label(score),
-                "indicators": mock_indicators,
-                "reasoning": self._get_market_reasoning(score, mock_indicators)
+                "indicators": indicators,
+                "reasoning": self._get_market_reasoning(score, indicators),
+                "data_source": "real" if self.alpaca else "fallback"
             }
             
         except Exception as e:
@@ -218,7 +341,8 @@ Format as JSON:
                 "score": 0.0,
                 "sentiment": "NEUTRAL",
                 "indicators": {},
-                "reasoning": "Unable to determine market sentiment"
+                "reasoning": "Unable to determine market sentiment",
+                "data_source": "error"
             }
     
     def _get_market_reasoning(self, score: float, indicators: Dict) -> str:
@@ -246,32 +370,20 @@ Format as JSON:
         """
         Get social media sentiment for a symbol.
         
-        Analyzes Twitter, Reddit, StockTwits, etc.
+        Note: Social media APIs not yet integrated.
+        Returns neutral until Twitter/Reddit APIs are added.
         """
-        try:
-            # Mock social sentiment (replace with actual social media APIs)
-            import random
-            
-            mentions = random.randint(100, 5000)
-            score = random.uniform(-0.4, 0.6)
-            
-            return {
-                "score": score,
-                "sentiment": self._score_to_label(score),
-                "mentions": mentions,
-                "trending": mentions > 1000,
-                "reasoning": f"{mentions} mentions with {self._score_to_label(score).lower()} sentiment"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error getting social sentiment: {e}")
-            return {
-                "score": 0.0,
-                "sentiment": "NEUTRAL",
-                "mentions": 0,
-                "trending": False,
-                "reasoning": "Unable to determine social sentiment"
-            }
+        # Social media integration is Phase 3
+        # For now, return neutral to not affect trading decisions
+        logger.debug(f"Social sentiment not available for {symbol} (Phase 3 feature)")
+        return {
+            "score": 0.0,
+            "sentiment": "NEUTRAL",
+            "mentions": 0,
+            "trending": False,
+            "reasoning": "Social media analysis not yet implemented",
+            "data_source": "none"
+        }
     
     def _calculate_combined_sentiment(
         self,
@@ -282,19 +394,18 @@ Format as JSON:
         """
         Calculate combined sentiment score.
         
-        Weights:
-        - News: 40%
-        - Market: 35%
-        - Social: 25%
+        Weights (social excluded until Phase 3):
+        - News: 55% (increased from 40%)
+        - Market: 45% (increased from 35%)
+        - Social: 0% (not yet implemented)
         """
         news_score = news.get("score", 0.0)
         market_score = market.get("score", 0.0)
-        social_score = social.get("score", 0.0)
+        # Social is always 0 until Phase 3
         
         combined = (
-            news_score * 0.40 +
-            market_score * 0.35 +
-            social_score * 0.25
+            news_score * 0.55 +
+            market_score * 0.45
         )
         
         return max(-1.0, min(1.0, combined))

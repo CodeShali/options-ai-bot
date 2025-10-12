@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # OpenAI Configuration
     openai_api_key: str = Field(..., description="OpenAI API key")
     
+    # News API Configuration (Optional)
+    news_api_key: str = Field(default="", description="NewsAPI key (optional)")
+    news_api_enabled: bool = Field(default=False, description="Enable real news API")
+    
     # Trading Configuration
     trading_mode: Literal["paper", "live"] = Field(
         default="paper",

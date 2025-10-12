@@ -530,36 +530,135 @@ class AlpacaService:
         logger.warning(f"Using mock options chain for {symbol} - API may not be available")
         return organized_chain
     
-    async def get_option_quote(self, option_symbol: str) -> Optional[Dict[str, Any]]:
+    async def get_option_quote(self, option_symbol: str, include_greeks: bool = True) -> Optional[Dict[str, Any]]:
         """
-        Get quote for a specific option contract.
+        Get quote for a specific option contract with Greeks.
         
         Args:
             option_symbol: Option symbol (e.g., AAPL251220C00180000)
+            include_greeks: Whether to include Greeks data
             
         Returns:
-            Option quote with bid, ask, and price
+            Option quote with bid, ask, price, and Greeks
         """
         try:
-            # For now, return mock quote - replace with actual API when available
-            import random
-            
-            # Mock premium between $2-$8
-            mock_price = random.uniform(2.0, 8.0)
-            
-            return {
-                "symbol": option_symbol,
-                "bid": mock_price - 0.05,
-                "ask": mock_price + 0.05,
-                "price": mock_price,
-                "bid_size": 10,
-                "ask_size": 10,
-                "timestamp": datetime.now()
-            }
+            # Try to get real quote from Alpaca
+            # Note: This requires options trading approval
+            try:
+                # Attempt real API call (will work after Alpaca options approval)
+                snapshot = self.trading_client.get_option_snapshot(option_symbol)
+                
+                quote = {
+                    "symbol": option_symbol,
+                    "bid": snapshot.latest_quote.bid_price,
+                    "ask": snapshot.latest_quote.ask_price,
+                    "price": (snapshot.latest_quote.bid_price + snapshot.latest_quote.ask_price) / 2,
+                    "bid_size": snapshot.latest_quote.bid_size,
+                    "ask_size": snapshot.latest_quote.ask_size,
+                    "timestamp": datetime.now(),
+                    "data_source": "real"
+                }
+                
+                # Add Greeks if available and requested
+                if include_greeks and hasattr(snapshot, 'greeks'):
+                    quote["greeks"] = {
+                        "delta": snapshot.greeks.delta,
+                        "gamma": snapshot.greeks.gamma,
+                        "theta": snapshot.greeks.theta,
+                        "vega": snapshot.greeks.vega,
+                        "rho": snapshot.greeks.rho if hasattr(snapshot.greeks, 'rho') else None
+                    }
+                    logger.info(f"Real Greeks for {option_symbol}: Delta={quote['greeks']['delta']:.3f}")
+                elif include_greeks:
+                    # Calculate estimated Greeks if not provided
+                    quote["greeks"] = self._estimate_greeks(option_symbol)
+                
+                return quote
+                
+            except Exception as api_error:
+                # Fallback to mock data if API not available
+                logger.debug(f"Real options API not available, using mock: {api_error}")
+                
+                import random
+                
+                # Mock premium between $2-$8
+                mock_price = random.uniform(2.0, 8.0)
+                
+                quote = {
+                    "symbol": option_symbol,
+                    "bid": mock_price - 0.05,
+                    "ask": mock_price + 0.05,
+                    "price": mock_price,
+                    "bid_size": 10,
+                    "ask_size": 10,
+                    "timestamp": datetime.now(),
+                    "data_source": "mock"
+                }
+                
+                # Add estimated Greeks
+                if include_greeks:
+                    quote["greeks"] = self._estimate_greeks(option_symbol)
+                
+                return quote
             
         except Exception as e:
             logger.error(f"Error getting option quote for {option_symbol}: {e}")
             return None
+    
+    def _estimate_greeks(self, option_symbol: str) -> Dict[str, float]:
+        """
+        Estimate Greeks for an option contract.
+        
+        This is a simplified estimation. Real Greeks should come from Alpaca API.
+        
+        Args:
+            option_symbol: Option symbol
+            
+        Returns:
+            Estimated Greeks
+        """
+        try:
+            # Parse option symbol to get type and strike
+            parsed = self.parse_option_symbol(option_symbol)
+            if not parsed:
+                return self._default_greeks()
+            
+            option_type = parsed['option_type']
+            
+            # Simplified Greek estimates based on option type
+            # These are rough approximations for testing
+            if option_type == 'call':
+                return {
+                    "delta": 0.65,      # Calls: positive delta (0.5-0.8 for ATM/slightly OTM)
+                    "gamma": 0.05,      # Rate of delta change
+                    "theta": -0.08,     # Time decay per day (negative)
+                    "vega": 0.15,       # Volatility sensitivity
+                    "rho": 0.10,        # Interest rate sensitivity
+                    "estimated": True
+                }
+            else:  # put
+                return {
+                    "delta": -0.35,     # Puts: negative delta (-0.3 to -0.5 for OTM)
+                    "gamma": 0.05,      # Rate of delta change
+                    "theta": -0.08,     # Time decay per day (negative)
+                    "vega": 0.15,       # Volatility sensitivity
+                    "rho": -0.10,       # Interest rate sensitivity (negative for puts)
+                    "estimated": True
+                }
+        except Exception as e:
+            logger.error(f"Error estimating Greeks: {e}")
+            return self._default_greeks()
+    
+    def _default_greeks(self) -> Dict[str, float]:
+        """Return default Greeks when estimation fails."""
+        return {
+            "delta": 0.50,
+            "gamma": 0.05,
+            "theta": -0.08,
+            "vega": 0.15,
+            "rho": 0.05,
+            "estimated": True
+        }
     
     def format_option_symbol(self, underlying: str, expiration: str, 
                             option_type: str, strike: float) -> str:

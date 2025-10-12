@@ -7,8 +7,9 @@ from datetime import datetime
 from loguru import logger
 
 from agents.base_agent import BaseAgent
-from services import get_llm_service, get_database_service
+from services import get_llm_service, get_database_service, get_alpaca_service
 from services.sentiment_service import get_sentiment_service
+from services.news_service import get_news_service
 
 
 class StrategyAgent(BaseAgent):
@@ -19,8 +20,12 @@ class StrategyAgent(BaseAgent):
         super().__init__("Strategy")
         self.llm = get_llm_service()
         self.db = get_database_service()
+        self.alpaca = get_alpaca_service()
+        self.news = get_news_service()
         self.sentiment = get_sentiment_service()
         self.sentiment.set_llm(self.llm)
+        self.sentiment.set_alpaca(self.alpaca)
+        self.sentiment.set_news(self.news)
     
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
