@@ -360,13 +360,40 @@ Please provide a concise summary (3-5 sentences) covering:
             elif line.startswith("CONFIDENCE:"):
                 try:
                     conf = line.split(":", 1)[1].strip()
-                    result["confidence"] = float(conf.replace("%", ""))
+                    result["confidence"] = float(conf.rstrip('%'))
                 except:
                     pass
-            elif line.startswith("REASONING:"):
-                result["reasoning"] = line.split(":", 1)[1].strip()
         
         return result
+    
+    async def chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 2000
+    ) -> str:
+        """
+        Simple chat completion wrapper for sentiment analysis.
+        
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            Response content as string
+        """
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Error in chat completion: {e}")
+            return ""
 
 
 # Global instance

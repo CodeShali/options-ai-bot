@@ -1,0 +1,56 @@
+[
+  {
+    "test": "Service Initialization",
+    "status": "PASS",
+    "details": "All services initialized successfully",
+    "timestamp": "2025-10-12T12:05:05.332890"
+  },
+  {
+    "test": "Alpaca API Connection",
+    "status": "FAIL",
+    "details": "Error: 'account_number'",
+    "timestamp": "2025-10-12T12:05:05.584646"
+  },
+  {
+    "test": "Real Market Data (SPY/VIX/QQQ)",
+    "status": "FAIL",
+    "details": "Failed to fetch market data",
+    "timestamp": "2025-10-12T12:05:05.958219"
+  },
+  {
+    "test": "NewsAPI Integration",
+    "status": "PASS",
+    "details": "Fetched 5 real articles for AAPL. First headline: 'Apple Inc. (AAPL) Sued Over Workplace Discrimination...'",
+    "timestamp": "2025-10-12T12:05:06.085990"
+  },
+  {
+    "test": "Sentiment Analysis (Real Data)",
+    "status": "PASS",
+    "details": "Overall: NEUTRAL (0.00), News: real, Market: real",
+    "timestamp": "2025-10-12T12:05:13.284143"
+  },
+  {
+    "test": "Strategy Agent (AI Analysis)",
+    "status": "FAIL",
+    "details": "No analysis result",
+    "timestamp": "2025-10-12T12:05:13.284430"
+  },
+  {
+    "test": "Risk Manager Validation",
+    "status": "WARN",
+    "details": "Stock: False, Options: False - May be due to circuit breaker or position limits",
+    "timestamp": "2025-10-12T12:05:13.284637"
+  },
+  {
+    "test": "Greeks Analysis",
+    "status": "PASS",
+    "details": "Greeks available - Delta: 0.650, Theta: -0.080, Vega: 0.150, Source: estimated",
+    "timestamp": "2025-10-12T12:05:13.285356"
+  },
+  {
+    "test": "End-to-End Trading Flow",
+    "status": "PASS",
+    "details": "Flow executed but no BUY signal (Recommendation: NONE)",
+    "timestamp": "2025-10-12T12:05:17.909134"
+  }
+]
