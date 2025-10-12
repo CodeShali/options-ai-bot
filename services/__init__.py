@@ -4,6 +4,7 @@ from .llm_service import LLMService, get_llm_service
 from .database_service import DatabaseService, get_database_service
 from .sentiment_service import SentimentService, get_sentiment_service
 from .simulation_service import SimulationService, get_simulation_service
+from .news_service import NewsService, get_news_service
 
 __all__ = [
     "AlpacaService",
@@ -16,4 +17,6 @@ __all__ = [
     "get_sentiment_service",
     "SimulationService",
     "get_simulation_service",
+    "NewsService",
+    "get_news_service",
 ]
