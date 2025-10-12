@@ -2,6 +2,7 @@
 Alpaca API service for options trading.
 """
 import asyncio
+import aiohttp
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 from alpaca.trading.client import TradingClient
@@ -488,8 +489,57 @@ class AlpacaService:
             
         except Exception as e:
             logger.error(f"Error getting options chain for {symbol}: {e}")
-            # Return mock chain for testing
-            return self._create_mock_options_chain(symbol, min_expiration, max_expiration)
+            # Try to use real contracts API instead of mock
+            try:
+                contracts = await self.get_option_contracts_real(
+                    symbol,
+                    expiration_date_gte=min_expiration.strftime("%Y-%m-%d"),
+                    expiration_date_lte=max_expiration.strftime("%Y-%m-%d")
+                )
+                
+                if contracts:
+                    # Organize contracts
+                    organized_chain = {
+                        "symbol": symbol,
+                        "expirations": {},
+                        "calls": [],
+                        "puts": []
+                    }
+                    
+                    for contract in contracts:
+                        exp_date = contract.get("expiration_date")
+                        if exp_date not in organized_chain["expirations"]:
+                            organized_chain["expirations"][exp_date] = {"calls": [], "puts": []}
+                        
+                        contract_info = {
+                            "symbol": contract.get("symbol"),
+                            "strike": float(contract.get("strike_price", 0)),
+                            "expiration": exp_date,
+                            "type": contract.get("type", "call"),
+                            "data_source": "alpaca_real"  # ✅ REAL!
+                        }
+                        
+                        if contract.get("type") == "call":
+                            organized_chain["calls"].append(contract_info)
+                            organized_chain["expirations"][exp_date]["calls"].append(contract_info)
+                        else:
+                            organized_chain["puts"].append(contract_info)
+                            organized_chain["expirations"][exp_date]["puts"].append(contract_info)
+                    
+                    logger.info(f"✅ Using REAL options chain for {symbol}")
+                    return organized_chain
+            except Exception as real_error:
+                logger.error(f"Could not get real options chain: {real_error}")
+            
+            # Last resort: return empty chain (no mock data!)
+            logger.warning(f"No options data available for {symbol}")
+            return {
+                "symbol": symbol,
+                "expirations": {},
+                "calls": [],
+                "puts": [],
+                "data_source": "unavailable"
+            }
     
     def _create_mock_options_chain(self, symbol: str, min_exp: datetime, max_exp: datetime) -> Dict[str, Any]:
         """Create a mock options chain for testing when API is unavailable."""
@@ -544,67 +594,23 @@ class AlpacaService:
             Option quote with bid, ask, price, and Greeks
         """
         try:
-            # Try to get real quote from Alpaca
-            # Note: This requires options trading approval
-            try:
-                # Attempt real API call (will work after Alpaca options approval)
-                snapshot = self.trading_client.get_option_snapshot(option_symbol)
+            # Use the new real data method
+            quote = await self.get_option_quote_with_greeks(option_symbol)
+            
+            if quote:
+                # Calculate mid price if not present
+                if "price" not in quote and quote.get("bid") and quote.get("ask"):
+                    quote["price"] = (quote["bid"] + quote["ask"]) / 2
                 
-                quote = {
-                    "symbol": option_symbol,
-                    "bid": snapshot.latest_quote.bid_price,
-                    "ask": snapshot.latest_quote.ask_price,
-                    "price": (snapshot.latest_quote.bid_price + snapshot.latest_quote.ask_price) / 2,
-                    "bid_size": snapshot.latest_quote.bid_size,
-                    "ask_size": snapshot.latest_quote.ask_size,
-                    "timestamp": datetime.now(),
-                    "data_source": "real"
-                }
-                
-                # Add Greeks if available and requested
-                if include_greeks and hasattr(snapshot, 'greeks'):
-                    quote["greeks"] = {
-                        "delta": snapshot.greeks.delta,
-                        "gamma": snapshot.greeks.gamma,
-                        "theta": snapshot.greeks.theta,
-                        "vega": snapshot.greeks.vega,
-                        "rho": snapshot.greeks.rho if hasattr(snapshot.greeks, 'rho') else None
-                    }
-                    logger.info(f"Real Greeks for {option_symbol}: Delta={quote['greeks']['delta']:.3f}")
-                elif include_greeks:
-                    # Calculate estimated Greeks if not provided
-                    quote["greeks"] = self._estimate_greeks(option_symbol)
-                
-                return quote
-                
-            except Exception as api_error:
-                # Fallback to mock data if API not available
-                logger.debug(f"Real options API not available, using mock: {api_error}")
-                
-                import random
-                
-                # Mock premium between $2-$8
-                mock_price = random.uniform(2.0, 8.0)
-                
-                quote = {
-                    "symbol": option_symbol,
-                    "bid": mock_price - 0.05,
-                    "ask": mock_price + 0.05,
-                    "price": mock_price,
-                    "bid_size": 10,
-                    "ask_size": 10,
-                    "timestamp": datetime.now(),
-                    "data_source": "mock"
-                }
-                
-                # Add estimated Greeks
-                if include_greeks:
-                    quote["greeks"] = self._estimate_greeks(option_symbol)
-                
+                logger.info(f"✅ Got REAL option quote for {option_symbol}")
                 return quote
             
+            # If real data fails, log warning but don't use mock
+            logger.warning(f"Could not get real option quote for {option_symbol}")
+            return None
+            
         except Exception as e:
-            logger.error(f"Error getting option quote for {option_symbol}: {e}")
+            logger.error(f"Error in get_option_quote for {option_symbol}: {e}")
             return None
     
     def _estimate_greeks(self, option_symbol: str) -> Dict[str, float]:
@@ -875,6 +881,189 @@ class AlpacaService:
         except Exception as e:
             logger.error(f"Error closing options position {option_symbol}: {e}")
             return False
+    
+    async def get_options_snapshots_with_greeks(self, symbol: str) -> Dict[str, Any]:
+        """
+        Get REAL options chain with Greeks from Alpaca.
+        
+        Uses Alpaca's /v1beta1/options/snapshots endpoint which provides:
+        - Latest quotes (bid/ask)
+        - Latest trades
+        - Greeks (Delta, Gamma, Theta, Vega, Rho)
+        - Implied Volatility
+        
+        Args:
+            symbol: Underlying symbol (e.g., "AAPL")
+            
+        Returns:
+            Dict with snapshots for all option contracts
+        """
+        try:
+            url = f"https://data.alpaca.markets/v1beta1/options/snapshots/{symbol}"
+            headers = {
+                "APCA-API-KEY-ID": settings.alpaca_api_key,
+                "APCA-API-SECRET-KEY": settings.alpaca_secret_key
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"✅ Got REAL options snapshots with Greeks for {symbol}")
+                        return data
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to get options snapshots: {response.status} - {error_text}")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Error getting options snapshots for {symbol}: {e}")
+            return None
+    
+    async def get_option_contracts_real(
+        self,
+        symbol: str,
+        expiration_date_gte: Optional[str] = None,
+        expiration_date_lte: Optional[str] = None,
+        strike_price_gte: Optional[float] = None,
+        strike_price_lte: Optional[float] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get REAL option contracts from Alpaca.
+        
+        Uses Alpaca's /v2/options/contracts endpoint.
+        
+        Args:
+            symbol: Underlying symbol
+            expiration_date_gte: Minimum expiration date (YYYY-MM-DD)
+            expiration_date_lte: Maximum expiration date (YYYY-MM-DD)
+            strike_price_gte: Minimum strike price
+            strike_price_lte: Maximum strike price
+            
+        Returns:
+            List of option contracts
+        """
+        try:
+            url = "https://trading.alpaca.markets/v2/options/contracts"
+            headers = {
+                "APCA-API-KEY-ID": settings.alpaca_api_key,
+                "APCA-API-SECRET-KEY": settings.alpaca_secret_key
+            }
+            
+            params = {"underlying_symbols": symbol}
+            
+            if expiration_date_gte:
+                params["expiration_date_gte"] = expiration_date_gte
+            if expiration_date_lte:
+                params["expiration_date_lte"] = expiration_date_lte
+            if strike_price_gte:
+                params["strike_price_gte"] = str(strike_price_gte)
+            if strike_price_lte:
+                params["strike_price_lte"] = str(strike_price_lte)
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        contracts = data.get("option_contracts", [])
+                        logger.info(f"✅ Got {len(contracts)} REAL option contracts for {symbol}")
+                        return contracts
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to get option contracts: {response.status} - {error_text}")
+                        return []
+                        
+        except Exception as e:
+            logger.error(f"Error getting option contracts for {symbol}: {e}")
+            return []
+    
+    async def get_option_quote_with_greeks(self, option_symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Get REAL option quote with Greeks from Alpaca.
+        
+        Uses Alpaca's /v1beta1/options/quotes/latest endpoint.
+        
+        Args:
+            option_symbol: Option contract symbol (e.g., "AAPL250117C00150000")
+            
+        Returns:
+            Dict with quote data and Greeks
+        """
+        try:
+            # First get the latest quote
+            url = "https://data.alpaca.markets/v1beta1/options/quotes/latest"
+            headers = {
+                "APCA-API-KEY-ID": settings.alpaca_api_key,
+                "APCA-API-SECRET-KEY": settings.alpaca_secret_key
+            }
+            params = {"symbols": option_symbol}
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        quote_data = data.get("quotes", {}).get(option_symbol)
+                        
+                        if not quote_data:
+                            logger.warning(f"No quote data for {option_symbol}")
+                            return None
+                        
+                        # Now get Greeks from snapshots
+                        # Extract underlying symbol from option symbol
+                        underlying = option_symbol[:option_symbol.find(option_symbol[0].isdigit() and option_symbol[0] or option_symbol[1])]
+                        if not underlying:
+                            # Fallback: first letters before numbers
+                            for i, char in enumerate(option_symbol):
+                                if char.isdigit():
+                                    underlying = option_symbol[:i]
+                                    break
+                        
+                        # Get snapshot with Greeks
+                        snapshot_url = f"https://data.alpaca.markets/v1beta1/options/snapshots/{underlying}"
+                        async with session.get(snapshot_url, headers=headers) as snap_response:
+                            greeks = None
+                            implied_vol = None
+                            
+                            if snap_response.status == 200:
+                                snap_data = await snap_response.json()
+                                contract_snap = snap_data.get("snapshots", {}).get(option_symbol)
+                                if contract_snap:
+                                    greeks = contract_snap.get("greeks")
+                                    implied_vol = contract_snap.get("impliedVolatility")
+                        
+                        result = {
+                            "symbol": option_symbol,
+                            "bid": quote_data.get("bp"),  # bid price
+                            "ask": quote_data.get("ap"),  # ask price
+                            "bid_size": quote_data.get("bs"),
+                            "ask_size": quote_data.get("as"),
+                            "timestamp": quote_data.get("t"),
+                            "data_source": "alpaca_real"  # ✅ REAL!
+                        }
+                        
+                        # Add Greeks if available
+                        if greeks:
+                            result["greeks"] = {
+                                "delta": greeks.get("delta"),
+                                "gamma": greeks.get("gamma"),
+                                "theta": greeks.get("theta"),
+                                "vega": greeks.get("vega"),
+                                "rho": greeks.get("rho")
+                            }
+                        
+                        if implied_vol:
+                            result["implied_volatility"] = implied_vol
+                        
+                        logger.info(f"✅ Got REAL option quote with Greeks for {option_symbol}")
+                        return result
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to get option quote: {response.status} - {error_text}")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Error getting option quote for {option_symbol}: {e}")
+            return None
 
 
 # Global instance
