@@ -10,6 +10,17 @@ from loguru import logger
 
 from config import settings, update_trading_mode
 from services import get_alpaca_service, get_database_service
+from bot.discord_helpers import (
+    create_status_embed,
+    create_position_embed,
+    create_trade_embed,
+    create_sentiment_embed,
+    create_error_embed,
+    create_success_embed,
+    create_warning_embed,
+    format_positions_list,
+    format_trades_list
+)
 
 
 class TradingBot(commands.Bot):
@@ -182,67 +193,56 @@ async def status_command(interaction: discord.Interaction):
         # Get positions
         positions = await alpaca.get_positions()
         
-        # Get recent trades
-        recent_trades = await db.get_recent_trades(5)
-        
         # Get performance metrics
         metrics = await db.get_performance_metrics(30)
         
-        # Create embed
-        embed = discord.Embed(
-            title="📊 Trading System Status",
-            color=discord.Color.green() if not bot.system_paused else discord.Color.orange()
-        )
+        # Calculate position P/L
+        total_pl = sum(float(pos.get('unrealized_pl', 0)) for pos in positions)
+        today_pl = await db.get_today_pl()
         
-        # System status
-        status_text = "🟢 Active" if not bot.system_paused else "🟡 Paused"
-        embed.add_field(
-            name="System Status",
-            value=f"{status_text}\nMode: {settings.trading_mode.upper()}",
-            inline=True
-        )
+        # Check circuit breaker
+        cb_active = await db.is_circuit_breaker_active()
+        daily_loss = await db.get_daily_loss()
         
-        # Account info
-        embed.add_field(
-            name="Account",
-            value=f"Portfolio: ${account['portfolio_value']:,.2f}\n"
-                  f"Cash: ${account['cash']:,.2f}\n"
-                  f"Buying Power: ${account['buying_power']:,.2f}",
-            inline=True
-        )
+        # Get last activity times
+        last_scan = await db.get_last_scan_time() or "Never"
+        last_trade = await db.get_last_trade_time() or "Never"
         
-        # Positions
-        total_pl = sum(pos['unrealized_pl'] for pos in positions)
-        embed.add_field(
-            name="Positions",
-            value=f"Open: {len(positions)}\n"
-                  f"Unrealized P/L: ${total_pl:,.2f}",
-            inline=True
-        )
+        # Build status data
+        status_data = {
+            'running': not bot.system_paused,
+            'status': 'Running' if not bot.system_paused else 'Paused',
+            'mode': settings.trading_mode,
+            'paused': bot.system_paused,
+            'account': account,
+            'positions': {
+                'count': len(positions),
+                'total_pl': total_pl,
+                'today_pl': today_pl
+            },
+            'performance': {
+                'win_rate': metrics.get('win_rate', 0),
+                'total_trades': metrics.get('total_trades', 0),
+                'total_pl': metrics.get('total_profit_loss', 0)
+            },
+            'circuit_breaker': {
+                'active': cb_active,
+                'daily_loss': daily_loss,
+                'limit': getattr(settings, 'max_daily_loss', 1000)
+            },
+            'last_scan': last_scan,
+            'last_trade': last_trade,
+            'uptime': 'N/A'  # TODO: Track uptime
+        }
         
-        # Performance
-        embed.add_field(
-            name="30-Day Performance",
-            value=f"Trades: {metrics['total_trades']}\n"
-                  f"Win Rate: {metrics['win_rate']:.1f}%\n"
-                  f"Total P/L: ${metrics['total_profit_loss']:,.2f}",
-            inline=False
-        )
-        
-        # Recent positions
-        if positions:
-            pos_text = ""
-            for pos in positions[:5]:
-                pl_pct = pos['unrealized_plpc'] * 100
-                emoji = "🟢" if pos['unrealized_pl'] > 0 else "🔴"
-                pos_text += f"{emoji} {pos['symbol']}: ${pos['unrealized_pl']:,.2f} ({pl_pct:+.2f}%)\n"
-            embed.add_field(name="Top Positions", value=pos_text, inline=False)
-        
+        # Create beautiful embed
+        embed = create_status_embed(status_data)
         await interaction.followup.send(embed=embed)
         
     except Exception as e:
         logger.error(f"Error in status command: {e}")
-        await interaction.followup.send(f"❌ Error getting status: {str(e)}")
+        embed = create_error_embed(f"Error getting status: {str(e)}")
+        await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="positions", description="List all open positions")
@@ -255,36 +255,18 @@ async def positions_command(interaction: discord.Interaction):
         positions = await alpaca.get_positions()
         
         if not positions:
-            await interaction.followup.send("📭 No open positions")
+            embed = create_warning_embed("No open positions")
+            await interaction.followup.send(embed=embed)
             return
         
-        embed = discord.Embed(
-            title="📈 Open Positions",
-            color=discord.Color.blue()
-        )
-        
-        for pos in positions:
-            pl_pct = pos['unrealized_plpc'] * 100
-            emoji = "🟢" if pos['unrealized_pl'] > 0 else "🔴"
-            
-            value = (
-                f"Qty: {pos['qty']}\n"
-                f"Entry: ${pos['avg_entry_price']:.2f}\n"
-                f"Current: ${pos['current_price']:.2f}\n"
-                f"P/L: ${pos['unrealized_pl']:,.2f} ({pl_pct:+.2f}%)"
-            )
-            
-            embed.add_field(
-                name=f"{emoji} {pos['symbol']}",
-                value=value,
-                inline=True
-            )
-        
+        # Use beautiful formatted list
+        embed = format_positions_list(positions)
         await interaction.followup.send(embed=embed)
         
     except Exception as e:
         logger.error(f"Error in positions command: {e}")
-        await interaction.followup.send(f"❌ Error getting positions: {str(e)}")
+        embed = create_error_embed(f"Error getting positions: {str(e)}")
+        await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="sell", description="Sell a position")
@@ -300,24 +282,28 @@ async def sell_command(interaction: discord.Interaction, symbol: str):
         # Check if position exists
         position = await alpaca.get_position(symbol)
         if not position:
-            await interaction.followup.send(f"❌ No position found for {symbol}")
+            embed = create_error_embed(f"No position found for {symbol}")
+            await interaction.followup.send(embed=embed)
             return
         
         # Close position
         success = await alpaca.close_position(symbol)
         
         if success:
-            await interaction.followup.send(
-                f"✅ Sell order placed for {symbol}\n"
+            embed = create_success_embed(
+                f"**Sell order placed for {symbol}**\n\n"
                 f"Quantity: {position['qty']}\n"
                 f"P/L: ${position['unrealized_pl']:,.2f}"
             )
+            await interaction.followup.send(embed=embed)
         else:
-            await interaction.followup.send(f"❌ Failed to sell {symbol}")
+            embed = create_error_embed(f"Failed to sell {symbol}")
+            await interaction.followup.send(embed=embed)
         
     except Exception as e:
         logger.error(f"Error in sell command: {e}")
-        await interaction.followup.send(f"❌ Error selling position: {str(e)}")
+        embed = create_error_embed(f"Error selling position: {str(e)}")
+        await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="pause", description="Pause the trading system")
@@ -1094,86 +1080,26 @@ async def sentiment_command(interaction: discord.Interaction, symbol: str):
         
         # Set LLM if available
         if bot.orchestrator:
-            from services import get_llm_service
+            from services import get_llm_service, get_alpaca_service, get_news_service
             sentiment_service.set_llm(get_llm_service())
+            sentiment_service.set_alpaca(get_alpaca_service())
+            sentiment_service.set_news(get_news_service())
         
         await interaction.followup.send(f"🔍 Analyzing sentiment for {symbol}...\n⏳ This may take a moment...")
         
         # Get sentiment
         sentiment = await sentiment_service.analyze_symbol_sentiment(symbol)
         
-        # Create embed
-        if sentiment.get('overall_sentiment') == 'POSITIVE':
-            color = discord.Color.green()
-            emoji = "📈"
-        elif sentiment.get('overall_sentiment') == 'NEGATIVE':
-            color = discord.Color.red()
-            emoji = "📉"
-        else:
-            color = discord.Color.blue()
-            emoji = "➡️"
-        
-        embed = discord.Embed(
-            title=f"{emoji} Sentiment Analysis: {symbol}",
-            description=sentiment.get('interpretation', 'No interpretation available'),
-            color=color
-        )
-        
-        # Overall sentiment
-        embed.add_field(
-            name="📊 Overall Sentiment",
-            value=(
-                f"**{sentiment['overall_sentiment']}**\n"
-                f"Score: {sentiment['overall_score']:.2f} (-1 to 1)"
-            ),
-            inline=False
-        )
-        
-        # News sentiment
-        news = sentiment.get('news_sentiment', {})
-        embed.add_field(
-            name="📰 News Sentiment",
-            value=(
-                f"**{news.get('sentiment', 'N/A')}**\n"
-                f"Score: {news.get('score', 0):.2f}\n"
-                f"{news.get('reasoning', 'N/A')}"
-            ),
-            inline=True
-        )
-        
-        # Market sentiment
-        market = sentiment.get('market_sentiment', {})
-        embed.add_field(
-            name="📈 Market Sentiment",
-            value=(
-                f"**{market.get('sentiment', 'N/A')}**\n"
-                f"Score: {market.get('score', 0):.2f}\n"
-                f"{market.get('reasoning', 'N/A')}"
-            ),
-            inline=True
-        )
-        
-        # Social sentiment
-        social = sentiment.get('social_sentiment', {})
-        embed.add_field(
-            name="💬 Social Sentiment",
-            value=(
-                f"**{social.get('sentiment', 'N/A')}**\n"
-                f"Score: {social.get('score', 0):.2f}\n"
-                f"Mentions: {social.get('mentions', 0):,}"
-            ),
-            inline=True
-        )
-        
-        embed.set_footer(text=f"Analysis timestamp: {sentiment.get('timestamp', 'N/A')}")
-        
+        # Use beautiful sentiment embed
+        embed = create_sentiment_embed(sentiment)
         await interaction.followup.send(embed=embed)
         
         logger.info(f"Sentiment analysis for {symbol}: {sentiment['overall_sentiment']}")
         
     except Exception as e:
         logger.error(f"Error in sentiment command: {e}")
-        await interaction.followup.send(f"❌ Error analyzing sentiment: {str(e)}")
+        embed = create_error_embed(f"Error analyzing sentiment: {str(e)}")
+        await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="help", description="Show all available commands")

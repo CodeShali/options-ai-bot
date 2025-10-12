@@ -10,6 +10,7 @@ from agents.base_agent import BaseAgent
 from services import get_llm_service, get_database_service, get_alpaca_service
 from services.sentiment_service import get_sentiment_service
 from services.news_service import get_news_service
+from config import settings
 
 
 class StrategyAgent(BaseAgent):
@@ -84,11 +85,17 @@ class StrategyAgent(BaseAgent):
             # Get sentiment analysis
             sentiment_data = await self.sentiment.analyze_symbol_sentiment(symbol)
             
-            # Get AI analysis
-            analysis = await self.llm.analyze_market_opportunity(
+            # Determine trade type based on market conditions
+            trade_type = self._determine_trade_type(opportunity, technical_indicators, sentiment_data)
+            logger.info(f"Trade type for {symbol}: {trade_type}")
+            
+            # Get AI analysis with trade type specific prompt
+            analysis = await self._analyze_with_trade_type(
                 symbol,
                 market_data,
-                technical_indicators
+                technical_indicators,
+                sentiment_data,
+                trade_type
             )
             
             # Adjust confidence based on sentiment
@@ -107,9 +114,19 @@ class StrategyAgent(BaseAgent):
                 "reasoning": sentiment_reasoning
             }
             
-            # Update reasoning with sentiment
+            # Add trade type and targets
+            analysis['trade_type'] = trade_type
+            targets = self._get_targets_for_trade_type(trade_type, market_data['current_price'])
+            analysis['profit_target'] = targets['target_price']
+            analysis['stop_loss'] = targets['stop_price']
+            analysis['max_hold_minutes'] = targets['max_hold_minutes']
+            analysis['target_pct'] = targets['target_pct']
+            analysis['stop_pct'] = targets['stop_pct']
+            
+            # Update reasoning with sentiment and trade type
             if sentiment_reasoning:
                 analysis['reasoning'] += f" | Sentiment: {sentiment_reasoning}"
+            analysis['reasoning'] += f" | Trade Type: {trade_type.upper()} (Target: {targets['target_pct']*100:.1f}%, Stop: {targets['stop_pct']*100:.1f}%)"
             
             # Record analysis in database
             await self.db.record_analysis(
@@ -312,6 +329,289 @@ class StrategyAgent(BaseAgent):
             indicators['Momentum_5'] = ((closes[-1] - closes[-5]) / closes[-5]) * 100
         
         return indicators
+    
+    def _determine_trade_type(self, opportunity: Dict[str, Any], 
+                             technical_indicators: Dict[str, Any],
+                             sentiment_data: Dict[str, Any]) -> str:
+        """
+        Determine trade type (scalp, day_trade, swing) based on conditions.
+        
+        Args:
+            opportunity: Opportunity data
+            technical_indicators: Technical indicators
+            sentiment_data: Sentiment analysis
+            
+        Returns:
+            Trade type: 'scalp', 'day_trade', or 'swing'
+        """
+        score = opportunity.get('score', 0)
+        volatility = technical_indicators.get('Volatility', 0)
+        volume_ratio = opportunity.get('volume_ratio', 1.0)
+        momentum = abs(technical_indicators.get('Momentum_5', 0))
+        sentiment_score = abs(sentiment_data.get('overall_score', 0))
+        
+        # Check if aggressive mode is enabled
+        aggressive_mode = getattr(settings, 'scan_interval', 300) <= 60
+        
+        # Scalping criteria (only in aggressive mode)
+        if aggressive_mode and (
+            score >= 80 and
+            volatility > 2.0 and
+            volume_ratio > 2.0 and
+            momentum > 2.0 and
+            sentiment_score > 0.6
+        ):
+            return 'scalp'
+        
+        # Day trading criteria
+        elif aggressive_mode and (
+            score >= 70 and
+            volume_ratio > 1.5 and
+            (momentum > 1.0 or sentiment_score > 0.4)
+        ):
+            return 'day_trade'
+        
+        # Default to swing trading
+        else:
+            return 'swing'
+    
+    def _get_targets_for_trade_type(self, trade_type: str, entry_price: float) -> Dict[str, Any]:
+        """
+        Get profit target and stop loss based on trade type.
+        
+        Args:
+            trade_type: Trade type (scalp, day_trade, swing)
+            entry_price: Entry price
+            
+        Returns:
+            Dictionary with target and stop prices
+        """
+        if trade_type == 'scalp':
+            target_pct = getattr(settings, 'scalp_target_pct', 0.015)  # 1.5%
+            stop_pct = getattr(settings, 'tight_stop_pct', 0.01)  # 1%
+            max_hold = getattr(settings, 'scalp_hold_time_minutes', 30)
+        elif trade_type == 'day_trade':
+            target_pct = getattr(settings, 'target_profit_pct', 0.03)  # 3%
+            stop_pct = getattr(settings, 'stop_loss_pct', 0.015)  # 1.5%
+            max_hold = getattr(settings, 'max_hold_time_minutes', 120)
+        else:  # swing
+            target_pct = 0.50  # 50%
+            stop_pct = 0.30  # 30%
+            max_hold = None
+        
+        return {
+            'target_price': entry_price * (1 + target_pct),
+            'stop_price': entry_price * (1 - stop_pct),
+            'target_pct': target_pct,
+            'stop_pct': stop_pct,
+            'max_hold_minutes': max_hold
+        }
+    
+    async def _analyze_with_trade_type(self,
+                                      symbol: str,
+                                      market_data: Dict[str, Any],
+                                      technical_indicators: Dict[str, Any],
+                                      sentiment_data: Dict[str, Any],
+                                      trade_type: str) -> Dict[str, Any]:
+        """
+        Analyze opportunity with trade type specific AI prompt.
+        
+        Args:
+            symbol: Stock symbol
+            market_data: Market data
+            technical_indicators: Technical indicators
+            sentiment_data: Sentiment data
+            trade_type: Trade type (scalp, day_trade, swing)
+            
+        Returns:
+            AI analysis result
+        """
+        current_price = market_data['current_price']
+        targets = self._get_targets_for_trade_type(trade_type, current_price)
+        
+        # Build trade type specific prompt
+        if trade_type == 'scalp':
+            prompt = self._build_scalp_prompt(symbol, market_data, technical_indicators, 
+                                             sentiment_data, targets)
+        elif trade_type == 'day_trade':
+            prompt = self._build_day_trade_prompt(symbol, market_data, technical_indicators,
+                                                  sentiment_data, targets)
+        else:
+            prompt = self._build_swing_prompt(symbol, market_data, technical_indicators,
+                                             sentiment_data, targets)
+        
+        # Get AI analysis
+        response = await self.llm.chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=800
+        )
+        
+        # Parse response
+        return self._parse_analysis_response(response, trade_type)
+    
+    def _build_scalp_prompt(self, symbol: str, market_data: Dict[str, Any],
+                           technical_indicators: Dict[str, Any],
+                           sentiment_data: Dict[str, Any],
+                           targets: Dict[str, Any]) -> str:
+        """Build AI prompt for scalping analysis."""
+        return f"""Analyze this SCALPING opportunity for {symbol}:
+
+TRADE TYPE: SCALP (hold 5-30 minutes)
+Target: {targets['target_pct']*100:.1f}% profit
+Stop: {targets['stop_pct']*100:.1f}% loss
+
+MARKET DATA:
+- Current Price: ${market_data['current_price']:.2f}
+- Change: {market_data['price_change_pct']:.2f}%
+- Volume Ratio: {market_data['volume_ratio']:.2f}x
+- High/Low: ${market_data['high']:.2f} / ${market_data['low']:.2f}
+
+TECHNICAL INDICATORS:
+- RSI: {technical_indicators.get('RSI', 'N/A')}
+- Momentum (5-bar): {technical_indicators.get('Momentum_5', 'N/A'):.2f}%
+- Volatility: {technical_indicators.get('Volatility', 'N/A')}
+- Volume Ratio: {technical_indicators.get('Volume_Ratio', 'N/A')}
+
+SENTIMENT:
+- Overall: {sentiment_data['overall_sentiment']} ({sentiment_data['overall_score']:.2f})
+- News: {sentiment_data['news_sentiment']['sentiment']}
+- Market: {sentiment_data['market_sentiment']['sentiment']}
+
+FOCUS ON:
+1. Immediate momentum (next 5-30 minutes)
+2. Quick entry/exit points
+3. Tight risk management
+4. High probability setups only
+5. Volume confirmation
+
+Provide your analysis in this EXACT format:
+RECOMMENDATION: [BUY/SELL/HOLD]
+CONFIDENCE: [0-100]
+RISK_LEVEL: [LOW/MEDIUM/HIGH]
+ENTRY_PRICE: [price]
+REASONING: [2-3 sentences focusing on immediate momentum and scalp setup]"""
+    
+    def _build_day_trade_prompt(self, symbol: str, market_data: Dict[str, Any],
+                                technical_indicators: Dict[str, Any],
+                                sentiment_data: Dict[str, Any],
+                                targets: Dict[str, Any]) -> str:
+        """Build AI prompt for day trading analysis."""
+        return f"""Analyze this DAY TRADING opportunity for {symbol}:
+
+TRADE TYPE: DAY TRADE (hold 30-120 minutes)
+Target: {targets['target_pct']*100:.1f}% profit
+Stop: {targets['stop_pct']*100:.1f}% loss
+
+MARKET DATA:
+- Current Price: ${market_data['current_price']:.2f}
+- Change: {market_data['price_change_pct']:.2f}%
+- Volume Ratio: {market_data['volume_ratio']:.2f}x
+- SMA 20: ${market_data['sma_20']:.2f}
+- High/Low: ${market_data['high']:.2f} / ${market_data['low']:.2f}
+
+TECHNICAL INDICATORS:
+- RSI: {technical_indicators.get('RSI', 'N/A')}
+- SMA 20: {technical_indicators.get('SMA_20', 'N/A')}
+- SMA 50: {technical_indicators.get('SMA_50', 'N/A')}
+- Momentum: {technical_indicators.get('Momentum_5', 'N/A'):.2f}%
+- Volatility: {technical_indicators.get('Volatility', 'N/A')}
+
+SENTIMENT:
+- Overall: {sentiment_data['overall_sentiment']} ({sentiment_data['overall_score']:.2f})
+- News: {sentiment_data['news_sentiment']['sentiment']} (Impact: {sentiment_data['news_sentiment']['impact']})
+- Market: {sentiment_data['market_sentiment']['sentiment']}
+
+FOCUS ON:
+1. Intraday trend strength and direction
+2. Support/resistance levels
+3. Volume confirmation
+4. Risk/reward ratio (targeting {targets['target_pct']*100:.1f}%)
+5. News catalyst impact
+
+Provide your analysis in this EXACT format:
+RECOMMENDATION: [BUY/SELL/HOLD]
+CONFIDENCE: [0-100]
+RISK_LEVEL: [LOW/MEDIUM/HIGH]
+ENTRY_PRICE: [price]
+REASONING: [3-4 sentences on intraday setup, trend, and catalysts]"""
+    
+    def _build_swing_prompt(self, symbol: str, market_data: Dict[str, Any],
+                           technical_indicators: Dict[str, Any],
+                           sentiment_data: Dict[str, Any],
+                           targets: Dict[str, Any]) -> str:
+        """Build AI prompt for swing trading analysis."""
+        return f"""Analyze this SWING TRADING opportunity for {symbol}:
+
+TRADE TYPE: SWING (hold hours to days)
+Target: {targets['target_pct']*100:.0f}% profit
+Stop: {targets['stop_pct']*100:.0f}% loss
+
+MARKET DATA:
+- Current Price: ${market_data['current_price']:.2f}
+- Change: {market_data['price_change_pct']:.2f}%
+- Volume Ratio: {market_data['volume_ratio']:.2f}x
+- SMA 20: ${market_data['sma_20']:.2f}
+- High/Low: ${market_data['high']:.2f} / ${market_data['low']:.2f}
+
+TECHNICAL INDICATORS:
+- RSI: {technical_indicators.get('RSI', 'N/A')}
+- SMA 20/50: {technical_indicators.get('SMA_20', 'N/A')} / {technical_indicators.get('SMA_50', 'N/A')}
+- Momentum: {technical_indicators.get('Momentum_5', 'N/A'):.2f}%
+- Volatility: {technical_indicators.get('Volatility', 'N/A')}
+
+SENTIMENT:
+- Overall: {sentiment_data['overall_sentiment']} ({sentiment_data['overall_score']:.2f})
+- News: {sentiment_data['news_sentiment']['sentiment']} (Impact: {sentiment_data['news_sentiment']['impact']})
+- Market: {sentiment_data['market_sentiment']['sentiment']}
+- Headlines: {len(sentiment_data['news_sentiment'].get('headlines', []))} recent articles
+
+FOCUS ON:
+1. Multi-day trend potential
+2. News catalysts and fundamental drivers
+3. Broader market conditions
+4. Longer-term risk/reward (targeting {targets['target_pct']*100:.0f}%)
+5. Technical support/resistance
+
+Provide your analysis in this EXACT format:
+RECOMMENDATION: [BUY/SELL/HOLD]
+CONFIDENCE: [0-100]
+RISK_LEVEL: [LOW/MEDIUM/HIGH]
+ENTRY_PRICE: [price]
+REASONING: [5+ sentences covering trend, catalysts, and longer-term outlook]"""
+    
+    def _parse_analysis_response(self, response: str, trade_type: str) -> Dict[str, Any]:
+        """Parse AI analysis response."""
+        lines = response.strip().split('\n')
+        result = {
+            'recommendation': 'HOLD',
+            'confidence': 0.0,
+            'risk_level': 'MEDIUM',
+            'entry_price': 0.0,
+            'reasoning': '',
+            'trade_type': trade_type
+        }
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('RECOMMENDATION:'):
+                result['recommendation'] = line.split(':', 1)[1].strip()
+            elif line.startswith('CONFIDENCE:'):
+                try:
+                    result['confidence'] = float(line.split(':', 1)[1].strip())
+                except:
+                    result['confidence'] = 50.0
+            elif line.startswith('RISK_LEVEL:'):
+                result['risk_level'] = line.split(':', 1)[1].strip()
+            elif line.startswith('ENTRY_PRICE:'):
+                try:
+                    result['entry_price'] = float(line.split(':', 1)[1].strip().replace('$', ''))
+                except:
+                    result['entry_price'] = 0.0
+            elif line.startswith('REASONING:'):
+                result['reasoning'] = line.split(':', 1)[1].strip()
+        
+        return result
     
     async def decide_instrument_type(self, analysis: Dict[str, Any], opportunity: Dict[str, Any]) -> Dict[str, Any]:
         """
