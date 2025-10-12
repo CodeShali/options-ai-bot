@@ -596,7 +596,7 @@ async def watchlist_command(interaction: discord.Interaction):
         
         for symbol in watchlist:
             try:
-                quote = await alpaca.get_quote(symbol)
+                quote = await alpaca.get_latest_quote(symbol)
                 if quote:
                     symbols_text += f"**{symbol}**: ${quote['price']:.2f}\n"
                 else:
@@ -622,7 +622,7 @@ async def quote_command(interaction: discord.Interaction, symbol: str):
     try:
         symbol = symbol.upper()
         alpaca = get_alpaca_service()
-        quote = await alpaca.get_quote(symbol)
+        quote = await alpaca.get_latest_quote(symbol)
         
         if not quote:
             await interaction.followup.send(f"❌ No quote found for {symbol}")
@@ -853,7 +853,7 @@ async def watchlist_add_command(interaction: discord.Interaction, symbol: str):
         
         # Get current quote
         alpaca = get_alpaca_service()
-        quote = await alpaca.get_quote(symbol)
+        quote = await alpaca.get_latest_quote(symbol)
         
         price_info = f"${quote['price']:.2f}" if quote else "N/A"
         
