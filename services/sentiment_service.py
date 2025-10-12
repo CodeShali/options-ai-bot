@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from loguru import logger
 
 from config import settings
+from services.trading_sentiment_service import TradingSentimentAnalyzer
 
 
 class SentimentService:
@@ -17,6 +18,8 @@ class SentimentService:
         self.llm = None  # Will be set later to avoid circular import
         self.alpaca = None  # Will be set later for market data
         self.news = None  # Will be set later for news data
+        self.claude = None  # Claude service for better analysis
+        self.trading_analyzer = None  # Will be initialized after services are set
         logger.info("Sentiment service initialized")
     
     def set_llm(self, llm_service):
@@ -30,6 +33,52 @@ class SentimentService:
     def set_news(self, news_service):
         """Set News service for news data."""
         self.news = news_service
+    
+    def set_claude(self, claude_service):
+        """Set Claude service for sentiment analysis."""
+        self.claude = claude_service
+    
+    def _ensure_trading_analyzer(self):
+        """Ensure trading analyzer is initialized."""
+        if self.trading_analyzer is None and self.llm and self.alpaca and self.news:
+            self.trading_analyzer = TradingSentimentAnalyzer(
+                self.llm, self.alpaca, self.news, self.claude
+            )
+            logger.info("Trading sentiment analyzer initialized")
+    
+    async def analyze_for_trading(self, symbol: str) -> Dict[str, Any]:
+        """
+        NEW: Comprehensive trading analysis with detailed opportunities.
+        
+        Uses GPT-4o-mini for cost-effective analysis.
+        Returns actionable recommendations for stocks, options, and spreads.
+        
+        Args:
+            symbol: Stock symbol
+            
+        Returns:
+            Comprehensive trading analysis with all opportunities
+        """
+        try:
+            self._ensure_trading_analyzer()
+            
+            if not self.trading_analyzer:
+                logger.error("Trading analyzer not available")
+                return {
+                    "error": "Trading analyzer not initialized",
+                    "symbol": symbol,
+                    "recommendation": "HOLD"
+                }
+            
+            return await self.trading_analyzer.analyze_for_trading(symbol)
+            
+        except Exception as e:
+            logger.error(f"Error in analyze_for_trading: {e}")
+            return {
+                "error": str(e),
+                "symbol": symbol,
+                "recommendation": "HOLD"
+            }
     
     async def analyze_symbol_sentiment(self, symbol: str) -> Dict[str, Any]:
         """

@@ -3,6 +3,7 @@ Discord bot for controlling the trading system.
 """
 import asyncio
 from typing import Optional, Dict, Any
+from datetime import datetime
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -1173,23 +1174,109 @@ async def sentiment_command(interaction: discord.Interaction, symbol: str):
         
         sentiment_service = get_sentiment_service()
         
-        # Set LLM if available
+        # Set services if available
         if bot.orchestrator:
             from services import get_llm_service, get_alpaca_service, get_news_service
+            from services.claude_service import get_claude_service
             sentiment_service.set_llm(get_llm_service())
             sentiment_service.set_alpaca(get_alpaca_service())
             sentiment_service.set_news(get_news_service())
+            sentiment_service.set_claude(get_claude_service())  # Add Claude for better analysis
         
-        await interaction.followup.send(f"🔍 Analyzing sentiment for {symbol}...\n⏳ This may take a moment...")
+        await interaction.followup.send(f"🔍 Analyzing {symbol} for trading opportunities...\n⏳ Gathering data and running AI analysis...")
         
-        # Get sentiment
-        sentiment = await sentiment_service.analyze_symbol_sentiment(symbol)
+        # Get NEW comprehensive trading analysis (uses GPT-4o-mini)
+        analysis = await sentiment_service.analyze_for_trading(symbol)
         
-        # Use beautiful sentiment embed
-        embed = create_sentiment_embed(sentiment)
-        await interaction.followup.send(embed=embed)
+        # Use new comprehensive trading embed
+        from bot.discord_helpers import create_trading_analysis_embed
+        embed = create_trading_analysis_embed(analysis)
         
-        logger.info(f"Sentiment analysis for {symbol}: {sentiment['overall_sentiment']}")
+        # Check if already in watchlist
+        alpaca = get_alpaca_service()
+        is_in_watchlist = await alpaca.is_in_watchlist(symbol)
+        
+        if is_in_watchlist:
+            # Already in watchlist - show what we're doing with it
+            watchlist_message = f"""
+📋 **{symbol} is already in your watchlist!**
+
+**What we're doing with it:**
+1. 🔍 **Monitoring** - Checking price every 5 minutes
+2. 📊 **Analyzing** - Running technical analysis on each scan
+3. 🎯 **Scoring** - Calculating trade opportunity score (0-100)
+4. 🚨 **Alerting** - Will notify you when score > 70
+5. 🤖 **Auto-Trading** - Can execute trades if conditions met (if enabled)
+
+**Current Process:**
+✅ Price tracking active
+✅ Pattern detection running
+✅ Risk analysis ongoing
+✅ Entry signals monitored
+
+Use `/watchlist` to see all monitored stocks.
+"""
+            await interaction.followup.send(embed=embed, content=watchlist_message)
+        else:
+            # Not in watchlist - show add button
+            class WatchlistView(discord.ui.View):
+                def __init__(self, symbol_to_add):
+                    super().__init__(timeout=60)
+                    self.symbol = symbol_to_add
+                    self.responded = False
+                
+                @discord.ui.button(label="✅ Add to Watchlist", style=discord.ButtonStyle.green)
+                async def add_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    if self.responded:
+                        return
+                    self.responded = True
+                    
+                    # Add to watchlist
+                    alpaca = get_alpaca_service()
+                    success = await alpaca.add_to_watchlist(self.symbol)
+                    
+                    if success:
+                        response_msg = f"""✅ **{self.symbol}** added to watchlist!
+
+**What happens now:**
+1. 🔍 Bot will monitor {self.symbol} every 5 minutes
+2. 📊 Technical analysis runs automatically
+3. 🎯 Trade opportunities scored (0-100)
+4. 🚨 You'll get alerts when score > 70
+5. 🤖 Auto-trading available (if enabled)
+
+Use `/watchlist` to see all monitored stocks."""
+                        await interaction.response.send_message(response_msg, ephemeral=True)
+                    else:
+                        await interaction.response.send_message(f"⚠️ Could not add **{self.symbol}** to watchlist", ephemeral=True)
+                    
+                    # Disable buttons
+                    for item in self.children:
+                        item.disabled = True
+                    await interaction.message.edit(view=self)
+                
+                @discord.ui.button(label="❌ No Thanks", style=discord.ButtonStyle.gray)
+                async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    if self.responded:
+                        return
+                    self.responded = True
+                    
+                    await interaction.response.send_message(f"👍 Skipped adding **{self.symbol}** to watchlist", ephemeral=True)
+                    
+                    # Disable buttons
+                    for item in self.children:
+                        item.disabled = True
+                    await interaction.message.edit(view=self)
+            
+            # Send embed with watchlist prompt
+            view = WatchlistView(symbol)
+            await interaction.followup.send(
+                embed=embed,
+                content=f"💡 **Add {symbol} to your watchlist?**",
+                view=view
+            )
+        
+        logger.info(f"Trading analysis for {symbol}: {analysis.get('recommendation', 'N/A')}")
         
     except Exception as e:
         logger.error(f"Error in sentiment command: {e}")

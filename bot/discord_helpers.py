@@ -531,3 +531,194 @@ def format_trades_list(trades: List[Dict[str, Any]]) -> discord.Embed:
         embed.set_footer(text=f"Showing 10 of {len(trades)} trades")
     
     return embed
+
+
+def create_trading_analysis_embed(analysis: Dict[str, Any]) -> discord.Embed:
+    """
+    Create comprehensive trading analysis embed with detailed opportunities.
+    Shows stocks, options, spreads, and actionable trade plans.
+    """
+    symbol = analysis.get('symbol', 'Unknown')
+    recommendation = analysis.get('recommendation', 'HOLD')
+    confidence = analysis.get('confidence', 0)
+    overview = analysis.get('overview', 'Analysis unavailable')
+    
+    # Color based on recommendation
+    if 'BUY' in recommendation.upper():
+        color = discord.Color.green()
+        emoji = "🟢"
+    elif 'SELL' in recommendation.upper() or 'AVOID' in recommendation.upper():
+        color = discord.Color.red()
+        emoji = "🔴"
+    else:
+        color = discord.Color.light_grey()
+        emoji = "⚪"
+    
+    # Main embed
+    embed = discord.Embed(
+        title=f"📊 Trading Analysis: {symbol}",
+        description=(
+            f"**━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━**\n"
+            f"## {emoji} {recommendation}\n"
+            f"**Confidence:** {confidence}%  |  **Horizon:** {analysis.get('time_horizon', 'N/A').title()}\n"
+            f"**━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━**"
+        ),
+        color=color,
+        timestamp=datetime.now()
+    )
+    
+    # Market Overview (2-3 sentences)
+    embed.add_field(
+        name="💡 MARKET OVERVIEW",
+        value=f"```{overview[:500]}```",
+        inline=False
+    )
+    
+    # Get opportunities
+    opportunities = analysis.get('opportunities', {})
+    
+    # Stock Opportunity
+    stock_opp = opportunities.get('stock', {})
+    if stock_opp.get('recommended'):
+        stock_value = (
+            f"**Action:** {stock_opp.get('action', 'N/A').upper()}\n"
+            f"**Entry:** ${stock_opp.get('entry_price', 0):.2f}\n"
+            f"**Target:** ${stock_opp.get('target_price', 0):.2f} ({stock_opp.get('expected_gain_pct', 0):+.1f}%)\n"
+            f"**Stop:** ${stock_opp.get('stop_loss', 0):.2f}\n"
+            f"**Size:** {stock_opp.get('position_size_shares', 0)} shares\n"
+            f"**Hold:** {stock_opp.get('hold_time', 'N/A')}\n"
+            f"**Best For:** {stock_opp.get('best_for', 'N/A')}\n"
+            f"```{stock_opp.get('reasoning', 'N/A')[:150]}```"
+        )
+        embed.add_field(
+            name="📈 STOCK TRADE",
+            value=stock_value,
+            inline=False
+        )
+    
+    # Call Options
+    call_options = opportunities.get('call_options', [])
+    if call_options:
+        for i, call in enumerate(call_options[:3], 1):  # Show top 3
+            if not call.get('recommended'):
+                continue
+            
+            call_value = (
+                f"**Type:** {call.get('type', 'N/A').replace('_', ' ').title()}\n"
+                f"**Strike:** ${call.get('strike', 0):.2f}\n"
+                f"**Expiry:** {call.get('expiry_days', 0)} days\n"
+                f"**Entry:** ${call.get('entry_premium_estimate', 0):.2f}\n"
+                f"**Target:** ${call.get('target_premium_estimate', 0):.2f} ({call.get('max_gain_pct', 0):+.0f}%)\n"
+                f"**Hold:** {call.get('hold_time', 'N/A')}\n"
+                f"**Best For:** {call.get('best_for', 'N/A')}\n"
+                f"```{call.get('reasoning', 'N/A')[:120]}```"
+            )
+            
+            type_emoji = "⚡" if '0dte' in call.get('type', '').lower() else "📞"
+            embed.add_field(
+                name=f"{type_emoji} CALL OPTION #{i}",
+                value=call_value,
+                inline=True
+            )
+    
+    # Put Options
+    put_options = opportunities.get('put_options', [])
+    if put_options:
+        for i, put in enumerate(put_options[:2], 1):  # Show top 2
+            if not put.get('recommended'):
+                continue
+            
+            put_value = (
+                f"**Strike:** ${put.get('strike', 0):.2f}\n"
+                f"**Expiry:** {put.get('expiry_days', 0)} days\n"
+                f"```{put.get('reasoning', 'N/A')[:100]}```"
+            )
+            embed.add_field(
+                name=f"📉 PUT OPTION #{i}",
+                value=put_value,
+                inline=True
+            )
+    
+    # Spreads
+    spreads = opportunities.get('spreads', [])
+    if spreads:
+        for i, spread in enumerate(spreads[:2], 1):  # Show top 2
+            if not spread.get('recommended'):
+                continue
+            
+            spread_value = (
+                f"**Type:** {spread.get('type', 'N/A').replace('_', ' ').title()}\n"
+                f"**Setup:** {spread.get('description', 'N/A')}\n"
+                f"**Max Gain:** ${spread.get('max_gain', 0):.2f}\n"
+                f"**Max Loss:** ${spread.get('max_loss', 0):.2f}\n"
+                f"**Best For:** {spread.get('best_for', 'N/A')}\n"
+                f"```{spread.get('reasoning', 'N/A')[:100]}```"
+            )
+            embed.add_field(
+                name=f"🔄 SPREAD #{i}",
+                value=spread_value,
+                inline=False
+            )
+    
+    # Catalysts & Risks (side by side)
+    catalysts = analysis.get('catalysts', [])
+    risks = analysis.get('risks', [])
+    
+    if catalysts:
+        catalysts_text = "\n".join([f"• {c}" for c in catalysts[:4]])
+        embed.add_field(
+            name="🚀 CATALYSTS",
+            value=catalysts_text or "None identified",
+            inline=True
+        )
+    
+    if risks:
+        risks_text = "\n".join([f"• {r}" for r in risks[:4]])
+        embed.add_field(
+            name="⚠️ RISKS",
+            value=risks_text or "None identified",
+            inline=True
+        )
+    
+    # Timing
+    timing = analysis.get('timing', {})
+    if timing:
+        timing_value = ""
+        if timing.get('best_entry_time'):
+            timing_value += f"**Entry:** {timing['best_entry_time']}\n"
+        if timing.get('best_exit_time'):
+            timing_value += f"**Exit:** {timing['best_exit_time']}\n"
+        if timing.get('avoid_times'):
+            timing_value += f"**Avoid:** {timing['avoid_times']}"
+        
+        if timing_value:
+            embed.add_field(
+                name="⏰ TIMING",
+                value=timing_value,
+                inline=False
+            )
+    
+    # Key Levels
+    key_levels = analysis.get('key_levels', {})
+    if key_levels:
+        levels_value = ""
+        if key_levels.get('support'):
+            supports = [f"${s:.2f}" for s in key_levels['support'][:3]]
+            levels_value += f"**Support:** {', '.join(supports)}\n"
+        if key_levels.get('resistance'):
+            resistances = [f"${r:.2f}" for r in key_levels['resistance'][:3]]
+            levels_value += f"**Resistance:** {', '.join(resistances)}"
+        
+        if levels_value:
+            embed.add_field(
+                name="📊 KEY LEVELS",
+                value=levels_value,
+                inline=False
+            )
+    
+    # Footer with model info
+    model_used = analysis.get('model_used', 'gpt-4o-mini')
+    cost = analysis.get('cost_estimate', 0.0001)
+    embed.set_footer(text=f"AI Model: {model_used} | Cost: ${cost:.4f} | Real-time analysis")
+    
+    return embed

@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # OpenAI Configuration
     openai_api_key: str = Field(..., description="OpenAI API key")
     
+    # Claude API Configuration (for sentiment analysis)
+    anthropic_api_key: str = Field(default="", description="Anthropic Claude API key for sentiment")
+    
     # News API Configuration (Optional)
     news_api_key: str = Field(default="", description="NewsAPI key (optional)")
     news_api_enabled: bool = Field(default=False, description="Enable real news API")

@@ -370,7 +370,8 @@ Please provide a concise summary (3-5 sentences) covering:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: int = 2000
+        max_tokens: int = 2000,
+        model: Optional[str] = None
     ) -> str:
         """
         Simple chat completion wrapper for sentiment analysis.
@@ -379,17 +380,20 @@ Please provide a concise summary (3-5 sentences) covering:
             messages: List of message dicts with 'role' and 'content'
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            model: Optional model override (e.g., 'gpt-4o-mini' for cheaper calls)
             
         Returns:
             Response content as string
         """
         try:
+            use_model = model or self.model
             response = await self.client.chat.completions.create(
-                model=self.model,
+                model=use_model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens
             )
+            logger.debug(f"LLM call completed using {use_model}")
             return response.choices[0].message.content
         except Exception as e:
             logger.error(f"Error in chat completion: {e}")

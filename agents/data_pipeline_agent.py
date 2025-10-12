@@ -163,11 +163,21 @@ class DataPipelineAgent(BaseAgent):
             logger.error(f"Error getting quote for {symbol}: {e}")
             return {"error": str(e)}
     
-    def add_to_watchlist(self, symbol: str):
+    def add_to_watchlist(self, symbol: str) -> bool:
         """Add symbol to watchlist."""
         if symbol not in self.watchlist:
             self.watchlist.append(symbol)
             logger.info(f"Added {symbol} to watchlist")
+            return True
+        return False  # Already in watchlist
+    
+    def is_in_watchlist(self, symbol: str) -> bool:
+        """Check if symbol is in watchlist."""
+        return symbol in self.watchlist
+    
+    def get_watchlist(self) -> list:
+        """Get current watchlist."""
+        return self.watchlist.copy()
     
     def remove_from_watchlist(self, symbol: str):
         """Remove symbol from watchlist."""

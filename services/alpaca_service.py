@@ -341,12 +341,28 @@ class AlpacaService:
             
             if symbol in quotes:
                 quote = quotes[symbol]
+                bid = float(quote.bid_price)
+                ask = float(quote.ask_price)
+                
+                # Handle after-hours quotes where ask might be 0
+                # Use bid if ask is 0, otherwise use mid-price
+                if ask == 0 and bid > 0:
+                    price = bid  # Use bid price when ask is 0 (after-hours)
+                elif bid == 0 and ask > 0:
+                    price = ask  # Use ask price when bid is 0
+                elif bid > 0 and ask > 0:
+                    price = (bid + ask) / 2  # Normal mid-price
+                else:
+                    price = 0  # Both are 0, no valid price
+                
                 return {
                     "symbol": symbol,
-                    "bid_price": float(quote.bid_price),
-                    "ask_price": float(quote.ask_price),
+                    "price": price,
+                    "bid": bid,
+                    "ask": ask,
                     "bid_size": int(quote.bid_size),
                     "ask_size": int(quote.ask_size),
+                    "spread": ask - bid if (ask > 0 and bid > 0) else 0,
                     "timestamp": quote.timestamp,
                 }
             return None
@@ -838,6 +854,57 @@ class AlpacaService:
                 "option_type": "call",
                 "strike": 0.0
             }
+    
+    async def add_to_watchlist(self, symbol: str) -> bool:
+        """
+        Add symbol to watchlist.
+        
+        Args:
+            symbol: Stock symbol
+            
+        Returns:
+            True if added, False if already in watchlist
+        """
+        try:
+            from agents.data_pipeline_agent import get_data_pipeline
+            pipeline = get_data_pipeline()
+            return pipeline.add_to_watchlist(symbol)
+        except Exception as e:
+            logger.error(f"Error adding to watchlist: {e}")
+            return False
+    
+    async def is_in_watchlist(self, symbol: str) -> bool:
+        """
+        Check if symbol is in watchlist.
+        
+        Args:
+            symbol: Stock symbol
+            
+        Returns:
+            True if in watchlist
+        """
+        try:
+            from agents.data_pipeline_agent import get_data_pipeline
+            pipeline = get_data_pipeline()
+            return pipeline.is_in_watchlist(symbol)
+        except Exception as e:
+            logger.error(f"Error checking watchlist: {e}")
+            return False
+    
+    async def get_watchlist(self) -> list:
+        """
+        Get current watchlist.
+        
+        Returns:
+            List of symbols in watchlist
+        """
+        try:
+            from agents.data_pipeline_agent import get_data_pipeline
+            pipeline = get_data_pipeline()
+            return pipeline.get_watchlist()
+        except Exception as e:
+            logger.error(f"Error getting watchlist: {e}")
+            return []
     
     async def close_option_position(self, option_symbol: str) -> bool:
         """
