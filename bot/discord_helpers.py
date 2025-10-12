@@ -94,7 +94,7 @@ def create_position_embed(position: Dict[str, Any]) -> discord.Embed:
         color = discord.Color.red()
         emoji = "📉"
     else:
-        color = discord.Color.grey()
+        color = discord.Color.light_grey()
         emoji = "➖"
     
     embed = discord.Embed(
@@ -233,7 +233,7 @@ def create_sentiment_embed(sentiment: Dict[str, Any]) -> discord.Embed:
         color = discord.Color.red()
         emoji = "🔴"
     else:
-        color = discord.Color.grey()
+        color = discord.Color.light_grey()
         emoji = "⚪"
     
     embed = discord.Embed(

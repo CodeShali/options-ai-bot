@@ -1,0 +1,109 @@
+2025-10-12 14:13:43.716 | INFO     | services.alpaca_service:__init__:38 - Alpaca service initialized in paper mode
+2025-10-12 14:13:43.716 | INFO     | services.database_service:__init__:22 - Database service initialized: ./data/trading.db
+2025-10-12 14:13:44.058 | INFO     | services.database_service:initialize:121 - Database schema initialized
+2025-10-12 14:13:44.110 | INFO     | services.sentiment_service:__init__:20 - Sentiment service initialized
+2025-10-12 14:13:44.110 | INFO     | services.sentiment_service:analyze_symbol_sentiment:45 - Analyzing sentiment for AAPL
+2025-10-12 14:13:44.110 | WARNING  | services.sentiment_service:_get_news_sentiment:122 - No news available for AAPL, returning neutral sentiment
+2025-10-12 14:13:44.110 | ERROR    | services.sentiment_service:_get_market_sentiment:290 - Alpaca service not available for market data
+2025-10-12 14:13:44.110 | DEBUG    | services.sentiment_service:_get_social_sentiment:378 - Social sentiment not available for AAPL (Phase 3 feature)
+2025-10-12 14:13:44.110 | INFO     | services.sentiment_service:analyze_symbol_sentiment:83 - Sentiment for AAPL: NEUTRAL (score: 0.00)
+2025-10-12 14:13:44.110 | INFO     | services.news_service:__init__:22 - News service initialized with real NewsAPI
+2025-10-12 14:13:44.326 | INFO     | services.news_service:get_news:65 - Fetched 1 news articles for AAPL
+
+============================================================
+DISCORD BOT COMMAND TEST SUITE
+============================================================
+Testing all Discord commands and flows...
+
+============================================================
+TEST: /status command
+============================================================
+✅ Account retrieved: $81,456.75
+✅ Positions retrieved: 1 positions
+✅ Performance metrics: {'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0, 'win_rate': 0, 'total_profit_loss': 0, 'days': 30}
+✅ Today's P/L: $0.00
+✅ /status command: PASSED
+
+============================================================
+TEST: /positions command
+============================================================
+✅ Retrieved 1 positions
+  - TSLA: 300.0 shares, P/L: $-19014.00
+✅ /positions command: PASSED
+
+============================================================
+TEST: /sentiment command
+============================================================
+Testing sentiment for AAPL...
+✅ Overall sentiment: NEUTRAL
+✅ Overall score: 0.00
+✅ News sentiment: {'score': 0.0, 'sentiment': 'NEUTRAL', 'themes': [], 'impact': 'LOW', 'reasoning': 'No recent news available', 'headlines': [], 'data_source': 'none'}
+✅ Market sentiment: {'score': 0.0, 'sentiment': 'NEUTRAL', 'indicators': {}, 'reasoning': 'Alpaca service not configured', 'data_source': 'none'}
+✅ /sentiment command: PASSED
+
+============================================================
+TEST: /api-status command
+============================================================
+Alpaca: ✅ Connected
+NewsAPI: ✅ Connected (1 articles)
+
+Trading Mode: paper
+Scan Interval: 300s
+Max Position Size: $5,000.00
+Max Daily Loss: $1,000.00
+✅ /api-status command: PASSED
+
+============================================================
+TEST: /aggressive-mode command
+============================================================
+Testing aggressive mode enable...
+✅ Aggressive mode enabled
+  Scan interval: 60s
+  Max position size: $2,000.00
+  Max daily loss: $500.00
+
+Testing aggressive mode disable...
+✅ Aggressive mode disabled
+  Scan interval: 300s
+  Max position size: $5,000.00
+  Max daily loss: $1,000.00
+✅ /aggressive-mode command: PASSED
+
+============================================================
+TEST: /circuit-breaker-set command
+============================================================
+✅ Circuit breaker set to $500.00
+✅ Circuit breaker restored to $1,000.00
+✅ /circuit-breaker-set command: PASSED
+
+============================================================
+TEST: /trades command
+============================================================
+✅ Retrieved 0 recent trades
+✅ /trades command: PASSED
+
+============================================================
+TEST: /performance command
+============================================================
+✅ Performance metrics retrieved
+  Total trades: 0
+  Win rate: 0.0%
+  Total P/L: $0.00
+  Avg profit: $0.00
+  Avg loss: $0.00
+✅ /performance command: PASSED
+
+============================================================
+TEST SUMMARY
+============================================================
+status              : ✅ PASSED
+positions           : ✅ PASSED
+sentiment           : ✅ PASSED
+api_status          : ✅ PASSED
+aggressive_mode     : ✅ PASSED
+circuit_breaker     : ✅ PASSED
+trades              : ✅ PASSED
+performance         : ✅ PASSED
+============================================================
+TOTAL: 8/8 tests passed (100.0%)
+============================================================
