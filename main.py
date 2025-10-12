@@ -3,6 +3,7 @@ Main entry point for the options trading system.
 """
 import asyncio
 import signal
+import os
 from contextlib import asynccontextmanager
 from loguru import logger
 import uvicorn

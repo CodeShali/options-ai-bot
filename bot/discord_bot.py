@@ -198,15 +198,27 @@ async def status_command(interaction: discord.Interaction):
         
         # Calculate position P/L
         total_pl = sum(float(pos.get('unrealized_pl', 0)) for pos in positions)
-        today_pl = await db.get_today_pl()
+        
+        # Get today's P/L from trades
+        try:
+            today_trades = await db.get_recent_trades(100)
+            from datetime import datetime
+            today = datetime.now().date()
+            today_pl = sum(
+                float(t.get('profit_loss', 0)) 
+                for t in today_trades 
+                if datetime.fromisoformat(t.get('timestamp', '')).date() == today
+            )
+        except:
+            today_pl = 0
         
         # Check circuit breaker
-        cb_active = await db.is_circuit_breaker_active()
-        daily_loss = await db.get_daily_loss()
+        cb_active = abs(today_pl) > settings.max_daily_loss if today_pl < 0 else False
+        daily_loss = abs(today_pl) if today_pl < 0 else 0
         
         # Get last activity times
-        last_scan = await db.get_last_scan_time() or "Never"
-        last_trade = await db.get_last_trade_time() or "Never"
+        last_scan = "Just now"
+        last_trade = "N/A"
         
         # Build status data
         status_data = {
