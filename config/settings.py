@@ -24,6 +24,10 @@ class Settings(BaseSettings):
         default="https://paper-api.alpaca.markets",
         description="Alpaca API base URL"
     )
+    alpaca_data_feed: Literal["iex", "sip"] = Field(
+        default="iex",
+        description="Market data feed: 'iex' (free) or 'sip' (paid, full volume)"
+    )
     
     # Discord Bot Configuration
     discord_bot_token: str = Field(..., description="Discord bot token")

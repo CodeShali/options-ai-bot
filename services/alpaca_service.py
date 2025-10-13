@@ -32,11 +32,23 @@ class AlpacaService:
             secret_key=settings.alpaca_secret_key,
             paper=settings.is_paper_trading
         )
+        
+        # Initialize market data client
+        # IEX = Free real-time quotes (15-min delayed volume, may have gaps)
+        # SIP = Premium real-time data (full volume from all exchanges)
         self.data_client = StockHistoricalDataClient(
             api_key=settings.alpaca_api_key,
-            secret_key=settings.alpaca_secret_key
+            secret_key=settings.alpaca_secret_key,
+            raw_data=False
         )
+        
+        # Store data feed preference
+        self.data_feed = settings.alpaca_data_feed
+        
         logger.info(f"Alpaca service initialized in {settings.trading_mode} mode")
+        logger.info(f"Market data feed: {self.data_feed.upper()} ({'Free' if self.data_feed == 'iex' else 'Premium'})")
+        if self.data_feed == "iex":
+            logger.warning("Using IEX feed: Volume data may be delayed or incomplete. Upgrade to SIP for full real-time data.")
     
     async def get_account(self) -> Dict[str, Any]:
         """
@@ -297,7 +309,8 @@ class AlpacaService:
                 timeframe=tf,
                 start=start,
                 end=end,
-                limit=limit
+                limit=limit,
+                feed=self.data_feed  # Use configured data feed (iex or sip)
             )
             
             bars = await asyncio.to_thread(
@@ -333,7 +346,10 @@ class AlpacaService:
             Quote dictionary or None
         """
         try:
-            request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+            request = StockLatestQuoteRequest(
+                symbol_or_symbols=symbol,
+                feed=self.data_feed  # Use configured data feed (iex or sip)
+            )
             quotes = await asyncio.to_thread(
                 self.data_client.get_stock_latest_quote,
                 request
