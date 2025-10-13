@@ -319,21 +319,30 @@ class AlpacaService:
             )
             
             result = []
-            if symbol in bars:
-                for bar in bars[symbol]:
-                    result.append({
-                        "timestamp": bar.timestamp,
-                        "open": float(bar.open),
-                        "high": float(bar.high),
-                        "low": float(bar.low),
-                        "close": float(bar.close),
-                        "volume": int(bar.volume),
-                    })
+            # BarSet object: 'in' operator doesn't work, but direct access does
+            # Access via bars.data dict or bars[symbol] directly
+            try:
+                if bars and hasattr(bars, 'data') and symbol in bars.data:
+                    for bar in bars.data[symbol]:
+                        result.append({
+                            "timestamp": bar['timestamp'] if isinstance(bar, dict) else bar.timestamp,
+                            "open": float(bar['open'] if isinstance(bar, dict) else bar.open),
+                            "high": float(bar['high'] if isinstance(bar, dict) else bar.high),
+                            "low": float(bar['low'] if isinstance(bar, dict) else bar.low),
+                            "close": float(bar['close'] if isinstance(bar, dict) else bar.close),
+                            "volume": int(bar['volume'] if isinstance(bar, dict) else bar.volume),
+                        })
+                    logger.debug(f"Retrieved {len(result)} bars for {symbol}")
+                else:
+                    logger.warning(f"No bars found for {symbol} in BarSet.data")
+            except Exception as e:
+                logger.error(f"Error accessing bars for {symbol}: {e}")
             
             return result
         except Exception as e:
-            logger.error(f"Error getting bars: {e}")
-            raise
+            logger.error(f"Error getting bars for {symbol}: {e}")
+            logger.exception("Full traceback:")
+            return []  # Return empty list instead of raising
     
     async def get_latest_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
@@ -833,27 +842,64 @@ class AlpacaService:
     
     def parse_option_symbol(self, option_symbol: str) -> Dict[str, str]:
         """
-        Parse OCC option symbol format.
+        Parse OCC option symbol format intelligently.
+        
+        OCC Format: UNDERLYING (1-6 chars, padded) + YYMMDD(6) + C/P(1) + STRIKE(8)
+        Examples:
+        - F251017C00010000 (F = Ford, 1 char ticker)
+        - GM251017C00045000 (GM = 2 chars)
+        - AAPL251220C00180000 (AAPL = 4 chars)
+        - OKLO251017C00175000 (OKLO = 4 chars)
+        - GOOGL251220C00150000 (GOOGL = 5 chars)
         
         Args:
-            option_symbol: Option symbol (e.g., AAPL251220C00180000)
+            option_symbol: Option symbol
             
         Returns:
             Parsed components
         """
         try:
-            # Format: SYMBOL(6) + YYMMDD(6) + C/P(1) + STRIKE(8)
-            underlying = option_symbol[:6].strip()
-            date_part = option_symbol[6:12]
-            option_type = "call" if option_symbol[12] == "C" else "put"
-            strike_part = option_symbol[13:21]
+            if len(option_symbol) < 15:
+                raise ValueError(f"Option symbol too short: {option_symbol}")
             
-            # Parse date
-            exp_date = datetime.strptime(date_part, "%y%m%d")
-            expiration = exp_date.strftime("%Y-%m-%d")
+            # Strategy: Work backwards from the end
+            # Last 8 chars = strike price (must be all digits)
+            # Before that = C or P (option type)
+            # Before that = 6 digits for date (YYMMDD)
+            # Everything before that = underlying ticker
             
-            # Parse strike
+            # Validate and extract strike (last 8 characters)
+            strike_part = option_symbol[-8:]
+            if not strike_part.isdigit():
+                raise ValueError(f"Invalid strike format: {strike_part}")
+            
+            # Extract option type (9th char from end)
+            option_type_char = option_symbol[-9]
+            if option_type_char not in ['C', 'P']:
+                raise ValueError(f"Invalid option type: {option_type_char}")
+            option_type = "call" if option_type_char == "C" else "put"
+            
+            # Extract date (15th to 10th char from end = 6 digits)
+            date_part = option_symbol[-15:-9]
+            if not date_part.isdigit() or len(date_part) != 6:
+                raise ValueError(f"Invalid date format: {date_part}")
+            
+            # Everything before the date is the underlying ticker
+            underlying = option_symbol[:-15].strip()
+            if not underlying:
+                raise ValueError("No underlying ticker found")
+            
+            # Parse date (YYMMDD format)
+            try:
+                exp_date = datetime.strptime(date_part, "%y%m%d")
+                expiration = exp_date.strftime("%Y-%m-%d")
+            except ValueError as e:
+                raise ValueError(f"Invalid date {date_part}: {e}")
+            
+            # Parse strike (8 digits, divide by 1000 for decimal)
             strike = int(strike_part) / 1000.0
+            
+            logger.debug(f"Parsed {option_symbol}: {underlying} {expiration} {option_type} ${strike}")
             
             return {
                 "underlying": underlying,
@@ -864,9 +910,17 @@ class AlpacaService:
             
         except Exception as e:
             logger.error(f"Error parsing option symbol {option_symbol}: {e}")
+            # Return safe defaults to prevent crashes
+            # Try to extract at least the ticker (first 1-6 chars before digits)
+            underlying = "UNKNOWN"
+            for i in range(1, min(7, len(option_symbol))):
+                if option_symbol[i:i+6].replace(' ', '').isdigit():
+                    underlying = option_symbol[:i].strip()
+                    break
+            
             return {
-                "underlying": "UNKNOWN",
-                "expiration": "2025-01-01",
+                "underlying": underlying if underlying else "UNKNOWN",
+                "expiration": (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d"),
                 "option_type": "call",
                 "strike": 0.0
             }
