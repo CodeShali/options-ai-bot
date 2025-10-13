@@ -145,14 +145,42 @@ class OrchestratorAgent(BaseAgent):
             
             logger.info(f"Found {len(opportunities)} opportunities")
             
-            # Send notification about opportunities found
-            await self._send_discord_alert(
-                f"🔍 Scan complete: Found {len(opportunities)} potential opportunities",
-                {
-                    "symbols": [opp['symbol'] for opp in opportunities[:5]],
-                    "analyzing": "Top 5 opportunities"
-                }
-            )
+            # Send detailed notification about opportunities found with Claude's reasoning
+            if opportunities:
+                # Build detailed message with Claude's analysis
+                alert_message = f"🔍 **Scan Complete: {len(opportunities)} Opportunities Found**\n\n"
+                
+                for i, opp in enumerate(opportunities[:3], 1):  # Show top 3
+                    rec = opp.get('recommendation', {})
+                    alert_message += f"**{i}. {opp['symbol']}** - ${opp['current_price']:.2f}\n"
+                    alert_message += f"   • Action: **{opp['action']}** ({opp['confidence']}% confidence)\n"
+                    alert_message += f"   • Score: {opp['score']:.0f}/100\n"
+                    
+                    # Add momentum info
+                    momentum = rec.get('momentum', {})
+                    if momentum:
+                        alert_message += f"   • Momentum: {momentum.get('direction', 'N/A')} {momentum.get('move_pct', 0):+.2f}% (15min)\n"
+                        alert_message += f"   • Volume: {momentum.get('volume_ratio_5min', 0):.2f}x average\n"
+                    
+                    # Add Claude's reasoning
+                    reasoning = opp.get('reasoning', 'No reasoning provided')
+                    alert_message += f"   • **Claude's Analysis:** {reasoning[:200]}...\n"
+                    
+                    # Add entry/exit if available
+                    if 'entry_strategy' in rec:
+                        alert_message += f"   • Entry: {rec.get('entry_strategy', 'N/A')[:100]}\n"
+                        alert_message += f"   • Target: ${rec.get('target_price', 0):.2f} | Stop: ${rec.get('stop_loss', 0):.2f}\n"
+                        alert_message += f"   • Risk: {rec.get('risk_level', 'N/A')}\n"
+                    
+                    alert_message += "\n"
+                
+                alert_message += "📊 **Next Steps:**\n"
+                alert_message += "• Review Claude's reasoning above\n"
+                alert_message += "• Verify analysis aligns with market conditions\n"
+                alert_message += "• Check if entry/exit makes sense\n"
+                alert_message += "• Execute if confident\n"
+                
+                await self._send_discord_alert(alert_message, {})
             
             # Step 4: Analyze top opportunities
             top_opportunities = opportunities[:5]  # Analyze top 5
