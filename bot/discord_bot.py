@@ -1600,6 +1600,250 @@ async def help_command(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
+@bot.tree.command(name="scan", description="🔍 Scan for trading opportunities")
+@app_commands.describe(symbols="Optional: Specific symbols to scan (comma-separated)")
+async def scan_command(interaction: discord.Interaction, symbols: Optional[str] = None):
+    """Scan for trading opportunities."""
+    await interaction.response.defer()
+    
+    try:
+        from services import get_sentiment_service
+        
+        # Parse symbols if provided
+        custom_symbols = None
+        if symbols:
+            custom_symbols = [s.strip().upper() for s in symbols.split(',')]
+            logger.info(f"Scanning custom symbols: {custom_symbols}")
+        
+        # Run intelligent scan
+        if bot.orchestrator and bot.orchestrator.data_pipeline:
+            scan_result = await bot.orchestrator.data_pipeline.scan_opportunities(custom_symbols)
+            
+            full_result = scan_result.get('full_scan_result', {})
+            summary = full_result.get('summary', 'Scan complete')
+            opportunities = scan_result.get('opportunities', [])
+            stats = full_result.get('scan_stats', {})
+            
+            # Create embed
+            embed = discord.Embed(
+                title="🔍 Market Scan Results",
+                description=summary,
+                color=discord.Color.blue(),
+                timestamp=datetime.now()
+            )
+            
+            # Add stats
+            embed.add_field(
+                name="📊 Scan Statistics",
+                value=f"Symbols Scanned: {stats.get('symbols_scanned', 0)}\n"
+                      f"Movers Detected: {stats.get('movers_detected', 0)}\n"
+                      f"Opportunities Found: {stats.get('opportunities_found', 0)}\n"
+                      f"Duration: {stats.get('duration_seconds', 0):.1f}s",
+                inline=False
+            )
+            
+            # Add top opportunities
+            if opportunities:
+                for i, opp in enumerate(opportunities[:3], 1):
+                    rec = opp.get('recommendation', {})
+                    embed.add_field(
+                        name=f"{i}. {opp['symbol']} - ${opp['current_price']:.2f}",
+                        value=f"**Action:** {opp['action']} ({opp['confidence']}% confidence)\n"
+                              f"**Score:** {opp['score']:.0f}/100\n"
+                              f"{opp['reasoning'][:150]}...",
+                        inline=False
+                    )
+            
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.followup.send(
+                embed=create_error_embed("Orchestrator not available")
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in scan command: {e}")
+        await interaction.followup.send(
+            embed=create_error_embed(f"Scan failed: {str(e)}")
+        )
+
+
+@bot.tree.command(name="watchlist", description="📋 Manage watchlist")
+@app_commands.describe(
+    action="Action: view, add, or remove",
+    symbol="Symbol to add/remove"
+)
+async def watchlist_command(
+    interaction: discord.Interaction,
+    action: str,
+    symbol: Optional[str] = None
+):
+    """Manage the trading watchlist."""
+    await interaction.response.defer()
+    
+    try:
+        if not bot.orchestrator or not bot.orchestrator.data_pipeline:
+            await interaction.followup.send(
+                embed=create_error_embed("Data pipeline not available")
+            )
+            return
+        
+        pipeline = bot.orchestrator.data_pipeline
+        
+        if action.lower() == "view":
+            # Show current watchlist
+            watchlist = pipeline.get_watchlist()
+            
+            embed = discord.Embed(
+                title="📋 Current Watchlist",
+                description=f"Monitoring {len(watchlist)} symbols",
+                color=discord.Color.blue(),
+                timestamp=datetime.now()
+            )
+            
+            embed.add_field(
+                name="Symbols",
+                value=", ".join(watchlist) if watchlist else "Empty",
+                inline=False
+            )
+            
+            await interaction.followup.send(embed=embed)
+            
+        elif action.lower() == "add":
+            if not symbol:
+                await interaction.followup.send(
+                    embed=create_error_embed("Please provide a symbol to add")
+                )
+                return
+            
+            symbol = symbol.upper()
+            added = pipeline.add_to_watchlist(symbol)
+            
+            if added:
+                await interaction.followup.send(
+                    embed=create_success_embed(f"✅ Added {symbol} to watchlist")
+                )
+            else:
+                await interaction.followup.send(
+                    embed=create_warning_embed(f"{symbol} is already in watchlist")
+                )
+                
+        elif action.lower() == "remove":
+            if not symbol:
+                await interaction.followup.send(
+                    embed=create_error_embed("Please provide a symbol to remove")
+                )
+                return
+            
+            symbol = symbol.upper()
+            pipeline.remove_from_watchlist(symbol)
+            
+            await interaction.followup.send(
+                embed=create_success_embed(f"✅ Removed {symbol} from watchlist")
+            )
+            
+        else:
+            await interaction.followup.send(
+                embed=create_error_embed(f"Unknown action: {action}. Use: view, add, or remove")
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in watchlist command: {e}")
+        await interaction.followup.send(
+            embed=create_error_embed(f"Watchlist command failed: {str(e)}")
+        )
+
+
+@bot.tree.command(name="analyze", description="📈 Deep analysis of a symbol")
+@app_commands.describe(symbol="Symbol to analyze")
+async def analyze_command(interaction: discord.Interaction, symbol: str):
+    """Perform deep analysis on a specific symbol."""
+    await interaction.response.defer()
+    
+    try:
+        symbol = symbol.upper()
+        
+        # Run intelligent scan on just this symbol
+        if bot.orchestrator and bot.orchestrator.data_pipeline:
+            scan_result = await bot.orchestrator.data_pipeline.scan_opportunities([symbol])
+            
+            opportunities = scan_result.get('opportunities', [])
+            
+            if opportunities:
+                opp = opportunities[0]
+                rec = opp.get('recommendation', {})
+                
+                embed = discord.Embed(
+                    title=f"📈 Deep Analysis: {symbol}",
+                    description=f"Current Price: ${opp['current_price']:.2f}",
+                    color=discord.Color.green() if opp['action'].startswith('BUY') else discord.Color.orange(),
+                    timestamp=datetime.now()
+                )
+                
+                # Recommendation
+                embed.add_field(
+                    name="🎯 Recommendation",
+                    value=f"**Action:** {opp['action']}\n"
+                          f"**Confidence:** {opp['confidence']}%\n"
+                          f"**Score:** {opp['score']:.0f}/100",
+                    inline=False
+                )
+                
+                # Reasoning
+                embed.add_field(
+                    name="💡 Analysis",
+                    value=opp['reasoning'],
+                    inline=False
+                )
+                
+                # Momentum
+                momentum = rec.get('momentum', {})
+                if momentum:
+                    embed.add_field(
+                        name="🚀 Momentum",
+                        value=f"Direction: {momentum.get('direction', 'N/A')}\n"
+                              f"Move: {momentum.get('move_pct', 0):+.2f}%\n"
+                              f"Volume: {momentum.get('volume_ratio_5min', 0):.2f}x",
+                        inline=True
+                    )
+                
+                # Technicals
+                technicals = rec.get('technicals', {})
+                if technicals:
+                    embed.add_field(
+                        name="📊 Technicals",
+                        value=f"RSI: {technicals.get('rsi', 0):.1f}\n"
+                              f"vs SMA20: {technicals.get('price_vs_sma20', 'N/A')}\n"
+                              f"Volume: {technicals.get('volume_trend', 'N/A')}",
+                        inline=True
+                    )
+                
+                # Entry/Exit if available
+                if 'entry_strategy' in rec:
+                    embed.add_field(
+                        name="📍 Entry/Exit",
+                        value=f"Entry: {rec.get('entry_strategy', 'N/A')}\n"
+                              f"Target: ${rec.get('target_price', 0):.2f}\n"
+                              f"Stop: ${rec.get('stop_loss', 0):.2f}",
+                        inline=False
+                    )
+                
+                await interaction.followup.send(embed=embed)
+            else:
+                await interaction.followup.send(
+                    embed=create_warning_embed(f"No significant opportunity detected for {symbol}")
+                )
+        else:
+            await interaction.followup.send(
+                embed=create_error_embed("Orchestrator not available")
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in analyze command: {e}")
+        await interaction.followup.send(
+            embed=create_error_embed(f"Analysis failed: {str(e)}")
+        )
+
+
 def get_bot() -> TradingBot:
     """Get the bot instance."""
     return bot

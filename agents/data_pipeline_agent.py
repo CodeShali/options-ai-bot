@@ -45,76 +45,49 @@ class DataPipelineAgent(BaseAgent):
         else:
             return {"error": f"Unknown action: {action}"}
     
-    async def scan_opportunities(self) -> Dict[str, Any]:
+    async def scan_opportunities(self, custom_symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         """
-        Scan watchlist for trading opportunities.
+        Scan watchlist for trading opportunities using intelligent scanner.
+        
+        Args:
+            custom_symbols: Optional list of symbols to scan instead of watchlist
         
         Returns:
             Dictionary with opportunities
         """
-        logger.info("Scanning for opportunities...")
+        # Use intelligent scanner
+        from agents.intelligent_scanner import IntelligentScanner
         
+        scanner = IntelligentScanner()
+        
+        # Use custom symbols if provided, otherwise use watchlist
+        symbols_to_scan = custom_symbols if custom_symbols else self.watchlist
+        
+        logger.info(f"🔍 Scanning {len(symbols_to_scan)} symbols with intelligent scanner...")
+        
+        # Run full intelligent scan
+        result = await scanner.scan_with_full_analysis(symbols_to_scan)
+        
+        # Extract opportunities for backward compatibility
         opportunities = []
+        for rec in result.get('opportunities', []):
+            opportunities.append({
+                "symbol": rec['symbol'],
+                "current_price": rec['current_price'],
+                "action": rec['action'],
+                "confidence": rec['confidence'],
+                "score": rec['momentum_score'],
+                "reasoning": rec['reasoning'],
+                "recommendation": rec  # Full recommendation
+            })
         
-        for symbol in self.watchlist:
-            try:
-                # Get latest quote
-                quote = await self.alpaca.get_latest_quote(symbol)
-                if not quote:
-                    continue
-                
-                # Get historical bars
-                bars = await self.alpaca.get_bars(
-                    symbol,
-                    timeframe="1Day",
-                    limit=30
-                )
-                
-                if len(bars) < 20:
-                    continue
-                
-                # Calculate basic indicators
-                closes = [bar['close'] for bar in bars]
-                volumes = [bar['volume'] for bar in bars]
-                
-                current_price = quote['ask_price']
-                avg_volume = sum(volumes[-20:]) / 20
-                sma_20 = sum(closes[-20:]) / 20
-                
-                # Simple momentum check
-                price_change_pct = ((current_price - closes[-2]) / closes[-2]) * 100
-                volume_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 0
-                
-                # Check for opportunity
-                if (
-                    price_change_pct > 2 and  # Price up > 2%
-                    volume_ratio > 1.5 and    # Volume > 1.5x average
-                    current_price > sma_20     # Price above SMA
-                ):
-                    opportunities.append({
-                        "symbol": symbol,
-                        "current_price": current_price,
-                        "price_change_pct": price_change_pct,
-                        "volume_ratio": volume_ratio,
-                        "sma_20": sma_20,
-                        "bars": bars[-5:],  # Last 5 bars
-                        "quote": quote,
-                        "score": price_change_pct * volume_ratio  # Simple scoring
-                    })
-                
-            except Exception as e:
-                logger.error(f"Error scanning {symbol}: {e}")
-                continue
-        
-        # Sort by score
-        opportunities.sort(key=lambda x: x['score'], reverse=True)
-        
-        logger.info(f"Found {len(opportunities)} opportunities")
+        logger.info(f"✅ Found {len(opportunities)} opportunities")
         
         return {
             "opportunities": opportunities,
+            "full_scan_result": result,
             "timestamp": datetime.now().isoformat(),
-            "symbols_scanned": len(self.watchlist)
+            "symbols_scanned": len(symbols_to_scan)
         }
     
     async def get_market_data(self, symbols: List[str]) -> Dict[str, Any]:
