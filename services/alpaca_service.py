@@ -16,7 +16,7 @@ from alpaca.trading.requests import (
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderType, QueryOrderStatus, AssetClass
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from loguru import logger
 
 from config import settings
@@ -296,8 +296,8 @@ class AlpacaService:
             
             timeframe_map = {
                 "1Min": TimeFrame.Minute,
-                "5Min": TimeFrame(5, "Min"),
-                "15Min": TimeFrame(15, "Min"),
+                "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+                "15Min": TimeFrame(15, TimeFrameUnit.Minute),
                 "1Hour": TimeFrame.Hour,
                 "1Day": TimeFrame.Day,
             }

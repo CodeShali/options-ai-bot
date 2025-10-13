@@ -474,7 +474,10 @@ class IntelligentScanner:
             prompt = self._build_recommendation_prompt(opportunity, news_data)
             
             # Get Claude's analysis
-            response = await self.claude.analyze(prompt)
+            messages = [
+                {"role": "user", "content": prompt}
+            ]
+            response = await self.claude.analyze_stock(messages)
             
             # Parse response
             recommendation = self._parse_ai_recommendation(response, opportunity)
