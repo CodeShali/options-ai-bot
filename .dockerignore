@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+logs/
+bot.log
+nohup.out
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Documentation (optional - include if you want docs in container)
+*.md
+docs/
+
+# Test files
+test_*.py
+*_test.py
+tests/
+check_prices.py
+test_pltr_data.py
+test_claude_api.py
+
+# Mac
+.DS_Store
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Scripts
+cleanup_docs.sh

@@ -57,6 +57,11 @@ def set_orchestrator(orch):
     orchestrator = orch
 
 
+def get_orchestrator():
+    """Get the orchestrator reference."""
+    return orchestrator
+
+
 @app.get("/")
 async def root():
     """Root endpoint."""

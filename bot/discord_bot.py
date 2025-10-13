@@ -753,26 +753,90 @@ async def scan_now_command(interaction: discord.Interaction):
             await interaction.followup.send("❌ Orchestrator not available")
             return
         
-        await interaction.followup.send("🔍 Starting scan...")
+        # Get watchlist
+        watchlist = bot.orchestrator.data_pipeline.watchlist if bot.orchestrator.data_pipeline else []
+        
+        # Send initial status
+        await interaction.followup.send(
+            f"🔍 **Starting Market Scan**\n\n"
+            f"**Scanning:** {len(watchlist)} symbols\n"
+            f"**Watchlist:** {', '.join(watchlist[:5])}{'...' if len(watchlist) > 5 else ''}\n"
+            f"**Process:**\n"
+            f"1. 📊 Fetching market data...\n"
+            f"2. 🎯 Calculating opportunity scores...\n"
+            f"3. 🤖 Generating trade signals...\n"
+            f"4. ✅ Executing approved trades...\n\n"
+            f"⏳ Please wait..."
+        )
         
         # Trigger scan and trade workflow
         result = await bot.orchestrator.scan_and_trade()
         
         status = result.get('status', 'unknown')
+        opportunities = result.get('opportunities_found', 0)
+        signals = result.get('signals_generated', 0)
+        trades = result.get('trades_executed', 0)
         
-        if status == 'success':
-            await interaction.followup.send(
-                f"✅ Scan complete!\n"
-                f"Opportunities: {result.get('opportunities_found', 0)}\n"
-                f"Signals: {result.get('signals_generated', 0)}\n"
-                f"Trades: {result.get('trades_executed', 0)}"
+        # Create detailed result embed
+        embed = discord.Embed(
+            title="📊 Scan Complete",
+            color=discord.Color.green() if trades > 0 else discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        
+        embed.add_field(
+            name="🔍 Scan Results",
+            value=f"**Symbols Scanned:** {len(watchlist)}\n"
+                  f"**Opportunities Found:** {opportunities}\n"
+                  f"**Signals Generated:** {signals}\n"
+                  f"**Trades Executed:** {trades}",
+            inline=False
+        )
+        
+        if opportunities > 0:
+            # Get opportunity details if available
+            opps = result.get('opportunities', [])
+            if opps:
+                opp_text = ""
+                for opp in opps[:3]:  # Show top 3
+                    symbol = opp.get('symbol', 'N/A')
+                    score = opp.get('score', 0)
+                    action = opp.get('action', 'N/A')
+                    opp_text += f"• **{symbol}**: Score {score}/100 - {action}\n"
+                
+                embed.add_field(
+                    name="🎯 Top Opportunities",
+                    value=opp_text or "No details available",
+                    inline=False
+                )
+        
+        if trades > 0:
+            embed.add_field(
+                name="✅ Action Taken",
+                value=f"Executed {trades} trade(s). Check `/positions` for details.",
+                inline=False
+            )
+        elif signals > 0:
+            embed.add_field(
+                name="⚠️ Signals Generated",
+                value=f"Found {signals} signal(s) but no trades executed (risk limits or market conditions).",
+                inline=False
             )
         else:
-            await interaction.followup.send(f"📊 Scan complete: {result.get('message', 'No action taken')}")
+            embed.add_field(
+                name="📉 No Action",
+                value="No high-quality opportunities found. Market conditions may not be favorable.",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Next scheduled scan in {bot.orchestrator.data_pipeline.scan_interval if hasattr(bot.orchestrator.data_pipeline, 'scan_interval') else 5} minutes")
+        
+        await interaction.followup.send(embed=embed)
         
     except Exception as e:
         logger.error(f"Error in scan-now command: {e}")
-        await interaction.followup.send(f"❌ Error running scan: {str(e)}")
+        embed = create_error_embed(f"Error running scan: {str(e)}")
+        await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="close-all", description="⚠️ Close all positions (EMERGENCY)")

@@ -1,0 +1,117 @@
+# Cloud Run service configuration
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: options-trading-bot
+  labels:
+    app: options-trading-bot
+    environment: production
+spec:
+  template:
+    metadata:
+      annotations:
+        # Auto-scaling configuration
+        autoscaling.knative.dev/minScale: '1'
+        autoscaling.knative.dev/maxScale: '1'
+        # CPU allocation (always allocated for long-running bot)
+        run.googleapis.com/cpu-throttling: 'false'
+        # Startup probe
+        run.googleapis.com/startup-cpu-boost: 'true'
+    spec:
+      # Service account for GCP permissions
+      serviceAccountName: options-trading-bot@PROJECT_ID.iam.gserviceaccount.com
+      
+      # Container timeout (1 hour for long-running operations)
+      timeoutSeconds: 3600
+      
+      containers:
+      - name: trading-bot
+        image: gcr.io/PROJECT_ID/options-trading-bot:latest
+        
+        # Resource limits
+        resources:
+          limits:
+            cpu: '2000m'
+            memory: '2Gi'
+          requests:
+            cpu: '1000m'
+            memory: '1Gi'
+        
+        # Environment variables (use Secret Manager for sensitive data)
+        env:
+        - name: TRADING_MODE
+          value: 'paper'
+        - name: PORT
+          value: '8000'
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        
+        # Secrets from Secret Manager
+        - name: ALPACA_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: alpaca-api-key
+              key: latest
+        - name: ALPACA_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: alpaca-secret-key
+              key: latest
+        - name: DISCORD_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: discord-token
+              key: latest
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openai-api-key
+              key: latest
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: anthropic-api-key
+              key: latest
+        - name: NEWS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: news-api-key
+              key: latest
+        
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        
+        # Port configuration
+        ports:
+        - name: http1
+          containerPort: 8000
+          protocol: TCP
+  
+  traffic:
+  - percent: 100
+    latestRevision: true

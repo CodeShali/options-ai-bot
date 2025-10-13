@@ -866,9 +866,11 @@ class AlpacaService:
             True if added, False if already in watchlist
         """
         try:
-            from agents.data_pipeline_agent import get_data_pipeline
-            pipeline = get_data_pipeline()
-            return pipeline.add_to_watchlist(symbol)
+            from api import get_orchestrator
+            orchestrator = get_orchestrator()
+            if orchestrator and orchestrator.data_pipeline:
+                return orchestrator.data_pipeline.add_to_watchlist(symbol)
+            return False
         except Exception as e:
             logger.error(f"Error adding to watchlist: {e}")
             return False
@@ -884,9 +886,11 @@ class AlpacaService:
             True if in watchlist
         """
         try:
-            from agents.data_pipeline_agent import get_data_pipeline
-            pipeline = get_data_pipeline()
-            return pipeline.is_in_watchlist(symbol)
+            from api import get_orchestrator
+            orchestrator = get_orchestrator()
+            if orchestrator and orchestrator.data_pipeline:
+                return orchestrator.data_pipeline.is_in_watchlist(symbol)
+            return False
         except Exception as e:
             logger.error(f"Error checking watchlist: {e}")
             return False
@@ -899,9 +903,11 @@ class AlpacaService:
             List of symbols in watchlist
         """
         try:
-            from agents.data_pipeline_agent import get_data_pipeline
-            pipeline = get_data_pipeline()
-            return pipeline.get_watchlist()
+            from api import get_orchestrator
+            orchestrator = get_orchestrator()
+            if orchestrator and orchestrator.data_pipeline:
+                return orchestrator.data_pipeline.get_watchlist()
+            return []
         except Exception as e:
             logger.error(f"Error getting watchlist: {e}")
             return []
