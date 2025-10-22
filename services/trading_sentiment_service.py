@@ -126,65 +126,78 @@ class TradingSentimentAnalyzer:
             return self._create_error_analysis(symbol, str(e))
     
     async def _get_stock_data(self, symbol: str) -> Dict[str, Any]:
-        """Get comprehensive stock data."""
+        """Get comprehensive stock data using Alpaca's snapshot API."""
         try:
-            # Get current quote
-            quote = await self.alpaca.get_latest_quote(symbol)
+            # Use Alpaca's snapshot API - it has EVERYTHING we need!
+            snapshot = await self.alpaca.get_snapshot(symbol)
             
-            if not quote:
-                logger.error(f"No quote data available for {symbol}")
-                return {"error": "No quote data"}
+            if not snapshot:
+                logger.error(f"No snapshot data available for {symbol}")
+                return {"error": "No snapshot data"}
             
-            # Get recent bars for trend analysis (use longer timeframe to ensure data)
+            # Get historical bars ONLY for 52-week high/low and 5-day change
             from datetime import datetime, timedelta
             end_date = datetime.now()
-            start_date = end_date - timedelta(days=30)  # Get 30 days to ensure we have data
-            bars = await self.alpaca.get_bars(symbol, timeframe="1Day", limit=20, start=start_date, end=end_date)
+            start_date = end_date - timedelta(days=365)  # Get 1 year
+            bars = await self.alpaca.get_bars(symbol, timeframe="1Day", limit=252, start=start_date, end=end_date)
             
-            # Use quote price as current price
-            current_price = quote.get('price', 0)
+            current_price = snapshot['price']
+            prev_close = snapshot['prev_close']
             
-            logger.info(f"Stock data for {symbol}: Price=${current_price:.2f}, Bars={len(bars) if bars else 0}")
+            # Alpaca already calculated 1-day change for us!
+            change_1d = snapshot['change_1d_pct']
             
-            # Calculate metrics (handle empty bars)
+            logger.info(f"📊 {symbol} (from Alpaca snapshot):")
+            logger.info(f"  Current: ${current_price:.2f}")
+            logger.info(f"  Prev Close: ${prev_close:.2f}")
+            logger.info(f"  1-Day Change: {change_1d:+.2f}% (from Alpaca)")
+            logger.info(f"  Daily Volume: {snapshot['daily_volume']:,}")
+            
+            # Calculate 5-day change and 52-week high/low from bars
             if bars and len(bars) > 0:
                 prices = [bar['close'] for bar in bars]
                 volumes = [bar['volume'] for bar in bars]
+                
+                # 5-day change
+                if len(prices) >= 5:
+                    five_days_ago_close = prices[-5]
+                    change_5d = ((current_price - five_days_ago_close) / five_days_ago_close) * 100
+                    logger.info(f"  5-Day Change: {change_5d:+.2f}%")
+                else:
+                    change_5d = 0
+                
+                # 52-week high/low
+                high_52w = max(prices)
+                low_52w = min(prices)
+                logger.info(f"  52w High/Low: ${high_52w:.2f} / ${low_52w:.2f} (from {len(prices)} days)")
+                
+                # Average volume
+                avg_volume = sum(volumes) / len(volumes) if volumes else 0
             else:
-                # Fallback to current price if no bars
-                logger.warning(f"No historical bars for {symbol}, using current price only")
-                prices = [current_price]
-                volumes = [0]
-            
-            avg_volume = sum(volumes) / len(volumes) if volumes else 0
-            current_volume = volumes[-1] if volumes else 0
-            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
-            
-            # Price changes
-            if len(prices) >= 2:
-                change_1d = ((prices[-1] - prices[-2]) / prices[-2]) * 100
-            else:
-                change_1d = 0
-            
-            if len(prices) >= 5:
-                change_5d = ((prices[-1] - prices[-5]) / prices[-5]) * 100
-            else:
+                logger.warning(f"No historical bars for {symbol}")
                 change_5d = 0
+                high_52w = current_price
+                low_52w = current_price
+                avg_volume = 0
             
-            # 52-week high/low (approximate from 20 days)
-            high_52w = max(prices)
-            low_52w = min(prices)
+            current_volume = snapshot['daily_volume']
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
             
             return {
                 "price": current_price,
-                "bid": quote.get('bid', current_price),
-                "ask": quote.get('ask', current_price),
-                "spread": quote.get('spread', 0),
+                "bid": snapshot['bid'],
+                "ask": snapshot['ask'],
+                "spread": snapshot['spread'],
+                "prev_close": prev_close,
                 "volume": current_volume,
                 "avg_volume": avg_volume,
                 "volume_ratio": volume_ratio,
-                "change_1d_pct": change_1d,
+                "change_1d_pct": change_1d,  # From Alpaca!
+                "change_1d_dollar": snapshot['change_1d_dollar'],  # From Alpaca!
                 "change_5d_pct": change_5d,
+                "daily_open": snapshot['daily_open'],
+                "daily_high": snapshot['daily_high'],
+                "daily_low": snapshot['daily_low'],
                 "high_52w": high_52w,
                 "low_52w": low_52w,
                 "distance_from_high": ((current_price - high_52w) / high_52w) * 100,
@@ -192,6 +205,7 @@ class TradingSentimentAnalyzer:
             }
         except Exception as e:
             logger.error(f"Error getting stock data: {e}")
+            logger.exception("Full traceback:")
             return {"error": str(e)}
     
     async def _get_news_data(self, symbol: str) -> Dict[str, Any]:
@@ -361,9 +375,9 @@ OPTIONS DATA:"""
 Provide a comprehensive trading analysis in JSON format with the following structure:
 
 {{
-  "overview": "2-3 sentence market overview explaining the current setup, key drivers, and overall opportunity. Be specific and actionable.",
+  "overview": "2-3 sentences explaining what's happening RIGHT NOW using the ACTUAL DATA PROVIDED ABOVE. Be PRECISE with the real numbers from the data (1-Day Change, 5-Day Change, Volume, Price). If 1-Day Change is POSITIVE (+X%), say 'up X%'. If NEGATIVE (-X%), say 'down X%'. Use the REAL current price from the data. Be conversational but ACCURATE.",
   
-  "recommendation": "BUY_STOCK|BUY_CALLS|BUY_PUTS|BULL_SPREAD|BEAR_SPREAD|HOLD|AVOID",
+  "recommendation": "BUY_STOCK|BUY_CALLS|BUY_PUTS|HOLD|AVOID",
   "confidence": 0-100,
   "time_horizon": "scalp|day|swing|position",
   
@@ -404,18 +418,6 @@ Provide a comprehensive trading analysis in JSON format with the following struc
         "expiry_days": days,
         "reasoning": "why or why not"
       }}
-    ],
-    
-    "spreads": [
-      {{
-        "recommended": true/false,
-        "type": "bull_call|bear_put|iron_condor|etc",
-        "description": "specific strikes and expiries",
-        "max_gain": amount,
-        "max_loss": amount,
-        "best_for": "trader type",
-        "reasoning": "why this spread"
-      }}
     ]
   }},
   
@@ -450,8 +452,7 @@ IMPORTANT: Return ONLY the JSON object, no markdown formatting, no code blocks, 
             "opportunities": {
                 "stock": {"recommended": False, "reasoning": "Analysis unavailable"},
                 "call_options": [],
-                "put_options": [],
-                "spreads": []
+                "put_options": []
             },
             "catalysts": [],
             "risks": ["Analysis system error"],
@@ -469,8 +470,7 @@ IMPORTANT: Return ONLY the JSON object, no markdown formatting, no code blocks, 
             "opportunities": {
                 "stock": {"recommended": False, "reasoning": f"Error: {error}"},
                 "call_options": [],
-                "put_options": [],
-                "spreads": []
+                "put_options": []
             },
             "catalysts": [],
             "risks": [f"System error: {error}"],

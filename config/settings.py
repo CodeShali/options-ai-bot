@@ -48,6 +48,18 @@ class Settings(BaseSettings):
         default="paper",
         description="Trading mode: paper or live"
     )
+    test_mode: bool = Field(
+        default=False,
+        description="Enable test mode (bypasses market hours checks for testing)"
+    )
+    auto_trading_enabled: bool = Field(
+        default=True,
+        description="Enable automatic trade execution (default: enabled)"
+    )
+    extended_hours_trading: bool = Field(
+        default=False,
+        description="Enable pre-market and after-hours trading"
+    )
     max_position_size: float = Field(
         default=5000.0,
         description="Maximum position size in USD"

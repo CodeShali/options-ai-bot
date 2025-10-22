@@ -1,11 +1,11 @@
-# 🤖 Options Trading AI Bot
+# 🌟 TARA - AI Trading System
 
-**Production-ready AI-powered options trading system with Discord bot control, Claude AI analysis, and comprehensive risk management.**
+**Trade by Light, Guided by Intelligence**
+
+*Automated trading system with Discord bot control, Claude AI analysis, and comprehensive risk management*
 
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Docker](https://img.shields.io/badge/docker-ready-brightgreen.svg)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-
 > **⚠️ DISCLAIMER**: This software is for educational purposes only. Trading involves substantial risk of loss. Use at your own risk.
 
 ---
@@ -14,10 +14,10 @@
 
 - [Features](#-features)
 - [Quick Start](#-quick-start)
-- [Deployment](#-deployment)
 - [Discord Commands](#-discord-commands)
 - [Architecture](#-architecture)
 - [Configuration](#-configuration)
+- [Testing](#-testing)
 - [Documentation](#-documentation)
 - [Support](#-support)
 
@@ -60,15 +60,14 @@
 ### Prerequisites
 
 - Python 3.11+
-- Docker (optional)
 - API Keys:
   - [Alpaca](https://alpaca.markets/) (Trading)
   - [Discord](https://discord.com/developers) (Bot)
   - [OpenAI](https://platform.openai.com/) (AI Analysis)
-  - [Anthropic](https://console.anthropic.com/) (Claude AI)
-  - [NewsAPI](https://newsapi.org/) (News Data)
+  - [Anthropic](https://console.anthropic.com/) (Claude AI - optional)
+  - [NewsAPI](https://newsapi.org/) (News Data - optional)
 
-### Local Installation
+### Installation
 
 ```bash
 # 1. Clone repository
@@ -89,64 +88,6 @@ cp .env.example .env
 # 5. Run the bot
 python main.py
 ```
-
-### Docker Installation
-
-```bash
-# 1. Clone repository
-git clone https://github.com/your-username/options-AI-BOT.git
-cd options-AI-BOT
-
-# 2. Configure environment
-cp .env.example .env
-# Edit .env with your API keys
-
-# 3. Run with Docker Compose
-docker-compose up -d
-
-# 4. View logs
-docker-compose logs -f
-```
-
----
-
-## 🌐 Deployment
-
-### DigitalOcean (Recommended - $12/month)
-
-**95% cheaper than GCP Cloud Run!**
-
-```bash
-# 1. Create DigitalOcean droplet (Ubuntu 22.04)
-# Get $200 free credit: https://www.digitalocean.com/
-
-# 2. SSH into droplet
-ssh root@your-droplet-ip
-
-# 3. Clone and deploy
-git clone https://github.com/your-username/options-AI-BOT.git
-cd options-AI-BOT
-./scripts/deployment/deploy-digitalocean.sh
-
-# Follow prompts and enter API keys
-# Done! Bot is running 24/7
-```
-
-**Cost Comparison:**
-- DigitalOcean: $12/month
-- GCP Cloud Run: $125/month
-- **Savings: $1,356/year**
-
-See [Deployment Guide](docs/deployment/CHEAPER_ALTERNATIVES.md) for more options.
-
-### Other Platforms
-
-- **Oracle Cloud Free**: $0/month (forever free!)
-- **Hetzner**: $5/month
-- **GCP Cloud Run**: $125/month
-- **AWS Lightsail**: $10/month
-
-See [Hosting Comparison](docs/deployment/HOSTING_OPTIONS_COMPARISON.md) for details.
 
 ---
 
@@ -324,36 +265,31 @@ options-AI-BOT/
 │   ├── deployment/
 │   ├── guides/
 │   └── archive/
-├── scripts/                # Deployment & testing
-│   ├── deployment/
-│   └── testing/
+├── tests/                  # All test scripts
 ├── data/                   # Database (runtime)
 ├── logs/                   # Log files (runtime)
 ├── main.py                 # Entry point
 ├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
 ├── .env.example
-└── README.md
+├── README.md
+└── START_HERE.md           # Quick start guide
 ```
 
 ---
 
 ## 📚 Documentation
 
-### Deployment Guides
-- [Cheaper Alternatives to GCP](docs/deployment/CHEAPER_ALTERNATIVES.md)
-- [Hosting Options Comparison](docs/deployment/HOSTING_OPTIONS_COMPARISON.md)
-- [GCP Deployment Guide](docs/deployment/GCP_DEPLOYMENT_GUIDE.md)
-- [Containerization Guide](docs/deployment/CONTAINERIZATION_COMPLETE.md)
-
-### Usage Guides
-- [Architecture Overview](docs/guides/ARCHITECTURE.md)
-- [Watchlist & Scan Fixes](docs/guides/WATCHLIST_AND_SCAN_FIXES.md)
+### Essential Guides
+- **[START_HERE.md](START_HERE.md)** - Quick start guide
+- **[SYSTEM_READINESS_REPORT.md](SYSTEM_READINESS_REPORT.md)** - System status & gaps
+- **[Operational Guide](docs/OPERATIONAL_GUIDE.md)** - Daily operations
+- **[System Architecture](docs/SYSTEM_ARCHITECTURE.md)** - Technical details
+- **[Workflow Guide](docs/WORKFLOW_GUIDE.md)** - Step-by-step workflows
+- **[Testing & Validation](docs/TESTING_VALIDATION.md)** - Testing procedures
 
 ### Testing
-- Test scripts in `scripts/testing/`
-- Run tests: `python scripts/testing/test_claude_api.py`
+- Test scripts in `tests/` directory
+- Run tests: `python tests/test_claude_api.py`
 
 ---
 
@@ -410,10 +346,10 @@ ALPACA_BASE_URL=https://paper-api.alpaca.markets
 ### System Tests
 ```bash
 # Test Claude API
-python scripts/testing/test_claude_api.py
+python tests/test_claude_api.py
 
 # Test Discord commands
-python scripts/testing/test_discord_commands.py
+python tests/test_discord_commands.py
 
 # Run full simulation
 /simulate  # In Discord
@@ -449,7 +385,7 @@ grep DISCORD_BOT_TOKEN .env
 ### API Errors
 ```bash
 # Test Alpaca connection
-python scripts/testing/check_prices.py
+python tests/check_prices.py
 
 # Verify API keys
 grep ALPACA .env
@@ -464,13 +400,9 @@ grep ALPACA .env
 - GPT-4o-mini: ~$0.10
 - NewsAPI: Free (100 req/day)
 
-### Hosting Costs (monthly)
-- DigitalOcean: $12
-- Oracle Free: $0
-- Hetzner: $5
-- GCP Cloud Run: $125
-
-**Recommended: DigitalOcean $12/month**
+### Hosting
+- Run locally on your machine (free)
+- Or deploy to your preferred cloud platform
 
 ---
 

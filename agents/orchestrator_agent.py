@@ -12,7 +12,14 @@ from agents.strategy_agent import StrategyAgent
 from agents.risk_manager_agent import RiskManagerAgent
 from agents.execution_agent import ExecutionAgent
 from agents.monitor_agent import MonitorAgent
-from services import get_database_service
+from services import get_database_service, get_cache_service, get_api_tracker
+from config import settings
+from bot.discord_helpers import (
+    format_existing_position_message,
+    format_order_submitted_message,
+    format_order_accepted_message,
+    format_order_filled_message,
+)
 
 
 class OrchestratorAgent(BaseAgent):
@@ -29,11 +36,15 @@ class OrchestratorAgent(BaseAgent):
         self.execution = ExecutionAgent()
         self.monitor = MonitorAgent()
         
+        # Initialize Tara services
         self.db = get_database_service()
+        self.cache = get_cache_service()
+        self.api_tracker = get_api_tracker()
+        
         self.paused = False
         self.discord_bot = None  # Will be set by main
         
-        logger.info("Orchestrator initialized with all agents")
+        logger.info("🌟 TARA Orchestrator initialized with all agents")
     
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -63,6 +74,14 @@ class OrchestratorAgent(BaseAgent):
         """Start the orchestrator and all agents."""
         await super().start()
         
+        # Check pause state from database
+        pause_state = await self.db.get_system_state("paused")
+        self.paused = pause_state == "true"
+        if self.paused:
+            logger.warning("⚠️ System is PAUSED - trades will not execute")
+        else:
+            logger.info("✅ System is ACTIVE - ready to trade")
+        
         # Start all agents
         await self.data_pipeline.start()
         await self.strategy.start()
@@ -85,6 +104,153 @@ class OrchestratorAgent(BaseAgent):
         
         logger.info("All agents stopped")
     
+    def _get_position_type(self, position: Dict) -> str:
+        """
+        Determine position type from position data.
+        
+        Returns:
+            'stock', 'call', or 'put'
+        """
+        symbol = position.get('symbol', '')
+        
+        # Check if it's an option (has strike/expiry or option indicators)
+        if 'strike' in position or 'option_type' in position:
+            option_type = position.get('option_type', '').lower()
+            if 'call' in option_type:
+                return 'call'
+            elif 'put' in option_type:
+                return 'put'
+        
+        # Check symbol format (options have special format)
+        if len(symbol) > 6:  # Options symbols are longer
+            # Try to detect from symbol
+            if 'C' in symbol[-9:]:  # Call indicator in option symbol
+                return 'call'
+            elif 'P' in symbol[-9:]:  # Put indicator in option symbol
+                return 'put'
+        
+        # Default to stock
+        return 'stock'
+    
+    async def should_skip_analysis(self, symbol: str, trade_type: str = 'stock') -> Dict[str, Any]:
+        """
+        Intelligent check if we should skip analyzing this symbol.
+        
+        Args:
+            symbol: Stock symbol
+            trade_type: 'stock', 'call', or 'put'
+        
+        Returns:
+            {
+                'skip': bool,
+                'reason': str,
+                'existing_position': dict or None,
+                'suggestion': str
+            }
+        """
+        try:
+            # Check cache first
+            cache_key = f"position_{symbol}"
+            cached = self.cache.get(cache_key)
+            
+            if cached:
+                position = cached
+                logger.debug(f"🟢 Cache hit: Found position for {symbol}")
+            else:
+                # Check broker
+                try:
+                    from services import get_alpaca_service
+                    alpaca = get_alpaca_service()
+                    positions = await alpaca.get_positions()
+                    
+                    # Find position for this symbol
+                    position = None
+                    for pos in positions:
+                        if pos['symbol'] == symbol:
+                            position = pos
+                            # Cache it
+                            await self.cache.set(cache_key, position)
+                            break
+                except Exception as e:
+                    logger.warning(f"Error checking positions: {e}")
+                    position = None
+            
+            if not position:
+                return {
+                    'skip': False,
+                    'reason': 'No existing position',
+                    'existing_position': None,
+                    'suggestion': 'New position opportunity'
+                }
+            
+            # Check if position is FILLED (not pending)
+            status = position.get('status', 'unknown').lower()
+            if status not in ['filled', 'active']:
+                return {
+                    'skip': False,
+                    'reason': f'Position status: {status} (not filled)',
+                    'existing_position': None,
+                    'suggestion': 'Position not yet active'
+                }
+            
+            # Determine existing position type
+            existing_type = self._get_position_type(position)
+            
+            # Apply intelligent rules
+            if existing_type == trade_type:
+                # Same type - check if we should scale in
+                current_size = float(position.get('market_value', 0))
+                max_size = settings.max_position_size
+                
+                if current_size >= max_size * 0.8:  # 80% of max
+                    return {
+                        'skip': True,
+                        'reason': f'Already have {existing_type} position at {current_size/max_size*100:.0f}% of max size',
+                        'existing_position': position,
+                        'suggestion': 'Consider taking profits or wait for exit signal'
+                    }
+                else:
+                    return {
+                        'skip': False,
+                        'reason': f'Can scale into existing {existing_type} position',
+                        'existing_position': position,
+                        'suggestion': f'Scale-in opportunity (current: {current_size/max_size*100:.0f}% of max)'
+                    }
+            
+            # Different type - allow for hedging/spreads
+            if existing_type == 'stock' and trade_type in ['put', 'call']:
+                return {
+                    'skip': False,
+                    'reason': f'Allow options on existing stock position (hedging)',
+                    'existing_position': position,
+                    'suggestion': f'Options strategy on {symbol} stock position'
+                }
+            
+            if existing_type in ['call', 'put'] and trade_type == 'stock':
+                return {
+                    'skip': False,
+                    'reason': f'Allow stock on existing options position',
+                    'existing_position': position,
+                    'suggestion': f'Stock position with existing {existing_type}'
+                }
+            
+            # Default: allow
+            return {
+                'skip': False,
+                'reason': 'Different position type',
+                'existing_position': position,
+                'suggestion': 'Compatible with existing position'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in should_skip_analysis: {e}")
+            return {
+                'skip': False,
+                'reason': f'Error checking: {str(e)}',
+                'existing_position': None,
+                'suggestion': 'Proceed with caution'
+            }
+    
     async def scan_and_trade(self) -> Dict[str, Any]:
         """
         Main trading workflow: scan for opportunities and execute trades.
@@ -105,11 +271,17 @@ class OrchestratorAgent(BaseAgent):
             })
             
             if circuit_breaker.get('triggered'):
-                logger.warning("Circuit breaker triggered, stopping workflow")
-                await self._send_discord_alert(
-                    "🚨 Circuit breaker triggered! Trading stopped.",
-                    circuit_breaker
+                logger.warning("⚠️ Circuit breaker triggered, stopping workflow")
+                
+                # Use Tara's formatted circuit breaker message
+                from bot.discord_helpers import format_circuit_breaker_message
+                cb_message = format_circuit_breaker_message(
+                    reason=circuit_breaker.get('reason', 'Daily loss limit exceeded'),
+                    duration=circuit_breaker.get('duration', 'remainder of trading day'),
+                    actions=circuit_breaker.get('actions', [])
                 )
+                
+                await self._send_discord_alert(cb_message, {})
                 return {
                     "status": "circuit_breaker",
                     "message": "Circuit breaker triggered",
@@ -129,97 +301,115 @@ class OrchestratorAgent(BaseAgent):
                     "data": position_limits
                 }
             
-            # Step 3: Scan for opportunities
+            # Step 3: Scan for opportunities with detailed logging
+            logger.info("🔍 Starting comprehensive market scan...")
+            logger.info("📊 Scanning strategies: Momentum, Mean Reversion, Breakout, Volume Analysis")
+            logger.info("🎯 Looking for: High-probability setups with 70%+ confidence")
+            
             scan_result = await self.data_pipeline.process({
                 "action": "scan_opportunities"
             })
             
             opportunities = scan_result.get('opportunities', [])
+            symbols_scanned = scan_result.get('symbols_scanned', [])
+            
+            # Handle case where symbols_scanned might be an int or list
+            if isinstance(symbols_scanned, int):
+                num_symbols = symbols_scanned
+            elif isinstance(symbols_scanned, list):
+                num_symbols = len(symbols_scanned)
+            else:
+                num_symbols = 0
+            
+            # Detailed scan summary
+            logger.info(f"📈 Scan completed: {num_symbols} symbols analyzed")
+            logger.info(f"🎯 Opportunities found: {len(opportunities)} total")
+            
+            # Categorize opportunities by confidence
+            high_conf = [o for o in opportunities if o.get('confidence', 0) >= 70]
+            medium_conf = [o for o in opportunities if 50 <= o.get('confidence', 0) < 70]
+            low_conf = [o for o in opportunities if o.get('confidence', 0) < 50]
+            
+            logger.info(f"   • High confidence (70%+): {len(high_conf)}")
+            logger.info(f"   • Medium confidence (50-69%): {len(medium_conf)}")
+            logger.info(f"   • Low confidence (<50%): {len(low_conf)}")
             
             if not opportunities:
-                logger.info("No opportunities found")
+                logger.info("❌ No opportunities found - Market conditions:")
+                logger.info("   • Low volatility or unclear technical setups")
+                logger.info("   • Waiting for stronger momentum signals")
+                logger.info("   • All scanned symbols outside entry criteria")
                 return {
                     "status": "no_opportunities",
-                    "message": "No trading opportunities found"
+                    "message": "No trading opportunities found",
+                    "scan_details": {
+                        "symbols_scanned": num_symbols,
+                        "total_opportunities": 0,
+                        "reasons": ["Low volatility", "No clear technical setups", "Waiting for momentum"]
+                    }
                 }
             
-            logger.info(f"Found {len(opportunities)} opportunities")
+            logger.info(f"✅ Scan successful: {len(opportunities)} opportunities identified")
             
-            # Send detailed notification about opportunities found with Claude's reasoning
-            if opportunities:
-                # Build detailed message with Claude's analysis
-                alert_message = f"🔍 **Scan Complete: {len(opportunities)} Opportunities Found**\n\n"
+            # Only send notifications for high-confidence opportunities (70%+)
+            high_confidence_opps = [
+                opp for opp in opportunities 
+                if opp.get('confidence', 0) >= 70 and opp.get('action') in ['BUY_STOCK', 'BUY_CALL', 'BUY_PUT']
+            ]
+            
+            # Prevent duplicate alerts - check if we've already alerted about these symbols recently
+            if not hasattr(self, '_recent_alerts'):
+                self._recent_alerts = {}
+            
+            # Filter out symbols we've alerted about in the last 30 minutes
+            from datetime import datetime, timedelta
+            now = datetime.now()
+            new_opps = []
+            for opp in high_confidence_opps:
+                symbol = opp['symbol']
+                last_alert = self._recent_alerts.get(symbol)
+                if not last_alert or (now - last_alert) > timedelta(minutes=30):
+                    new_opps.append(opp)
+                    self._recent_alerts[symbol] = now
+            
+            if new_opps:
+                # Build concise message for NEW high-confidence opportunities only
+                alert_message = f"🎯 **{len(new_opps)} New High-Confidence Trading Opportunity{'ies' if len(new_opps) > 1 else 'y'} Found**\n\n"
                 
-                for i, opp in enumerate(opportunities[:3], 1):  # Show top 3
-                    rec = opp.get('recommendation', {})
+                for i, opp in enumerate(new_opps[:2], 1):  # Show top 2 only
                     alert_message += f"**{i}. {opp['symbol']}** - ${opp['current_price']:.2f}\n"
-                    alert_message += f"   • Action: **{opp['action']}** ({opp['confidence']}% confidence)\n"
-                    alert_message += f"   • Score: {opp['score']:.0f}/100\n"
+                    alert_message += f"   • **{opp['action']}** ({opp['confidence']}% confidence)\n"
                     
-                    # Add momentum info
-                    momentum = rec.get('momentum', {})
-                    if momentum:
-                        alert_message += f"   • Momentum: {momentum.get('direction', 'N/A')} {momentum.get('move_pct', 0):+.2f}% (15min)\n"
-                        alert_message += f"   • Volume: {momentum.get('volume_ratio_5min', 0):.2f}x average\n"
-                    
-                    # Add Claude's reasoning
-                    reasoning = opp.get('reasoning', 'No reasoning provided')
-                    alert_message += f"   • **Claude's Analysis:** {reasoning[:200]}...\n"
-                    
-                    # Add entry/exit if available
-                    if 'entry_strategy' in rec:
-                        alert_message += f"   • Entry: {rec.get('entry_strategy', 'N/A')[:100]}\n"
-                        alert_message += f"   • Target: ${rec.get('target_price', 0):.2f} | Stop: ${rec.get('stop_loss', 0):.2f}\n"
-                        alert_message += f"   • Risk: {rec.get('risk_level', 'N/A')}\n"
-                    
-                    alert_message += "\n"
+                    # Add AI reasoning (shortened)
+                    reasoning = opp.get('reasoning', 'Strong technical setup detected')
+                    alert_message += f"   • 🤖 **AI:** {reasoning[:150]}{'...' if len(reasoning) > 150 else ''}\n\n"
                 
-                alert_message += "📊 **Next Steps:**\n"
-                alert_message += "• Review Claude's reasoning above\n"
-                alert_message += "• Verify analysis aligns with market conditions\n"
-                alert_message += "• Check if entry/exit makes sense\n"
-                alert_message += "• Execute if confident\n"
+                alert_message += "💡 *Ask me: 'Should I buy AAPL?' or 'Set stop loss on my positions' for personalized advice*"
                 
                 await self._send_discord_alert(alert_message, {})
             
-            # Step 4: Analyze top opportunities
-            top_opportunities = opportunities[:5]  # Analyze top 5
-            
-            analysis_result = await self.strategy.process({
-                "action": "batch_analyze",
-                "opportunities": top_opportunities
-            })
-            
-            analyses = analysis_result.get('analyses', [])
-            
-            # Filter for BUY recommendations with high confidence
+            # Intelligent scanner already has Claude's analysis, so use those recommendations directly
+            # Filter for high confidence BUY signals from intelligent scanner
             buy_signals = [
-                a for a in analyses
-                if a['recommendation'] == 'BUY' and a['confidence'] >= 60
+                opp for opp in opportunities
+                if opp['action'] in ['BUY_STOCK', 'BUY_CALL', 'BUY_PUT'] and opp['confidence'] >= 70
             ]
             
             if not buy_signals:
-                logger.info("No strong buy signals")
-                # Notify about analysis results
-                await self._send_discord_alert(
-                    "📊 AI Analysis complete: No strong buy signals",
-                    {
-                        "analyzed": len(analyses),
-                        "buy_signals": 0,
-                        "reason": "Confidence < 60% or HOLD/SELL recommendations"
-                    }
-                )
+                logger.info("No strong buy signals from intelligent scanner")
                 return {
                     "status": "no_signals",
-                    "message": "No strong buy signals found",
-                    "analyses": analyses
+                    "message": "No strong buy signals found (confidence < 70%)",
+                    "opportunities": opportunities
                 }
             
             logger.info(f"Found {len(buy_signals)} buy signals")
             
             # Send notification about buy signals
+            auto_trading_status = "ENABLED ✅" if settings.auto_trading_enabled else "DISABLED ⏸️"
             await self._send_discord_alert(
-                f"🤖 AI Analysis: {len(buy_signals)} BUY signal(s) detected!",
+                f"🤖 AI Analysis: {len(buy_signals)} BUY signal(s) detected!\n"
+                f"Auto-Trading: {auto_trading_status}",
                 {
                     "signals": [
                         {
@@ -232,14 +422,64 @@ class OrchestratorAgent(BaseAgent):
                 }
             )
             
-            # Step 5: Execute trades for approved signals
+            # Step 5: Execute trades for approved signals (only if auto-trading enabled)
             executed_trades = []
             
+            if not settings.auto_trading_enabled:
+                logger.info("Auto-trading disabled - sending alerts only")
+                return {
+                    "status": "alerts_only",
+                    "message": f"Found {len(buy_signals)} signals but auto-trading is disabled",
+                    "signals": buy_signals
+                }
+            
             for analysis in buy_signals[:position_limits['positions_available']]:
+                symbol = analysis['symbol']
+                action = analysis['action']
+                
+                # Determine trade type from action
+                trade_type = 'stock'
+                if 'CALL' in action:
+                    trade_type = 'call'
+                elif 'PUT' in action:
+                    trade_type = 'put'
+                
+                # Intelligent duplicate check
+                skip_check = await self.should_skip_analysis(symbol, trade_type)
+                
+                if skip_check['skip']:
+                    logger.info(f"⏭️ Skipping {symbol} {trade_type}: {skip_check['reason']}")
+                    
+                    # Send notification to Discord
+                    if self.discord_bot:
+                        message = (
+                            f"⏭️ **Skipped Trade: {symbol}**\n"
+                            f"**Type:** {trade_type.upper()}\n"
+                            f"**Reason:** {skip_check['reason']}\n"
+                            f"**Suggestion:** {skip_check['suggestion']}"
+                        )
+                        await self._send_discord_alert(message, {}, symbol=symbol)
+                    
+                    continue
+                
+                # If we have existing position but not skipping, note it
+                if skip_check['existing_position']:
+                    logger.info(f"📊 {symbol}: {skip_check['reason']} - {skip_check['suggestion']}")
+                    
+                    # Notify about scale-in or hedging opportunity
+                    if self.discord_bot and not skip_check['skip']:
+                        message = (
+                            f"📊 **Position Update: {symbol}**\n"
+                            f"**Strategy:** {skip_check['suggestion']}\n"
+                            f"**Note:** {skip_check['reason']}"
+                        )
+                        await self._send_discord_alert(message, {}, symbol=symbol)
+                
                 # Decide instrument type (stock vs options)
+                # The analysis IS the opportunity from intelligent scanner
                 instrument_decision = await self.strategy.decide_instrument_type(
                     analysis, 
-                    analysis['opportunity']
+                    analysis  # Pass the full analysis as the opportunity
                 )
                 
                 if instrument_decision['instrument'] == 'none':
@@ -252,7 +492,7 @@ class OrchestratorAgent(BaseAgent):
                     contract = await self.strategy.select_options_contract(
                         symbol=analysis['symbol'],
                         option_type=instrument_decision['option_type'],
-                        current_price=analysis['opportunity']['current_price']
+                        current_price=analysis.get('current_price', analysis.get('price', 0))
                     )
                     
                     if 'error' in contract:
@@ -296,7 +536,7 @@ class OrchestratorAgent(BaseAgent):
                     
                     if execution_result['success']:
                         executed_trades.append(execution_result)
-                        logger.info(f"Options trade executed: {trade['underlying']}")
+                        logger.info(f"🌟 TARA executed options trade: {trade['underlying']}")
                         
                         # Create thread
                         if self.discord_bot:
@@ -309,16 +549,27 @@ class OrchestratorAgent(BaseAgent):
                             except Exception as e:
                                 logger.error(f"Error creating thread: {e}")
                         
-                        # Notify
+                        # Send detailed options notification
+                        option_details = (
+                            f"🌟 **TARA EXECUTED OPTIONS TRADE**\n\n"
+                            f"**Symbol:** {trade['underlying']}\n"
+                            f"**Action:** BUY {trade['option_type'].upper()}\n"
+                            f"**Strike:** ${trade['strike']:.2f}\n"
+                            f"**Expiration:** {trade['expiration']}\n"
+                            f"**DTE:** {trade['dte']} days\n"
+                            f"**Contracts:** {trade['contracts']}\n"
+                            f"**Premium:** ${trade['premium']:.2f} per contract\n"
+                            f"**Total Cost:** ${validation['total_cost']:.2f}\n"
+                            f"**Confidence:** {analysis['confidence']}%\n\n"
+                            f"**🤖 AI Insight:** {analysis.get('reasoning', 'N/A')[:200]}...\n\n"
+                            f"**Target:** ${analysis.get('target_price', 0):.2f}\n"
+                            f"**Stop Loss:** ${analysis.get('stop_loss', 0):.2f}\n"
+                            f"**Risk Level:** {analysis.get('risk_level', 'MEDIUM')}"
+                        )
+                        
                         await self._send_discord_alert(
-                            f"✅ OPTIONS BUY: {trade['contracts']} {trade['underlying']} "
-                            f"{trade['option_type']} ${trade['strike']} exp {trade['expiration']} @ ${trade['premium']:.2f}",
-                            {
-                                "type": "options",
-                                "confidence": analysis['confidence'],
-                                "dte": trade['dte'],
-                                "total_cost": validation['total_cost']
-                            },
+                            option_details,
+                            {},
                             symbol=trade['underlying']
                         )
                     else:
@@ -374,7 +625,7 @@ class OrchestratorAgent(BaseAgent):
                 
                 if execution_result['success']:
                     executed_trades.append(execution_result)
-                    logger.info(f"Trade executed: {trade['symbol']}")
+                    logger.info(f"🌟 TARA executed trade: {trade['symbol']}")
                     
                     # Create position thread in Discord
                     if self.discord_bot:
@@ -387,13 +638,24 @@ class OrchestratorAgent(BaseAgent):
                         except Exception as e:
                             logger.error(f"Error creating position thread: {e}")
                     
-                    # Send Discord notification to thread
+                    # Send detailed Discord notification
+                    trade_details = (
+                        f"🌟 **TARA EXECUTED TRADE**\n\n"
+                        f"**Symbol:** {trade['symbol']}\n"
+                        f"**Action:** BUY STOCK\n"
+                        f"**Quantity:** {trade['quantity']} shares\n"
+                        f"**Price:** ${trade['price']:.2f}\n"
+                        f"**Total:** ${trade['quantity'] * trade['price']:.2f}\n"
+                        f"**Confidence:** {analysis['confidence']}%\n\n"
+                        f"**🤖 AI Insight:** {analysis.get('reasoning', 'N/A')[:200]}...\n\n"
+                        f"**Target:** ${analysis.get('target_price', 0):.2f}\n"
+                        f"**Stop Loss:** ${analysis.get('stop_loss', 0):.2f}\n"
+                        f"**Risk Level:** {analysis.get('risk_level', 'MEDIUM')}"
+                    )
+                    
                     await self._send_discord_alert(
-                        f"✅ BUY executed: {trade['quantity']} {trade['symbol']} @ ${trade['price']:.2f}",
-                        {
-                            "confidence": analysis['confidence'],
-                            "reasoning": analysis['reasoning'][:200]
-                        },
+                        trade_details,
+                        {},
                         symbol=trade['symbol']  # Send to position thread
                     )
                 else:
@@ -403,6 +665,18 @@ class OrchestratorAgent(BaseAgent):
                     )
             
             logger.info(f"=== Workflow complete: {len(executed_trades)} trades executed ===")
+            
+            # Send summary if trades were executed
+            if executed_trades:
+                summary = (
+                    f"🌟 **TARA SCAN COMPLETE**\n\n"
+                    f"**Opportunities Found:** {len(opportunities)}\n"
+                    f"**Signals Generated:** {len(buy_signals)}\n"
+                    f"**Trades Executed:** {len(executed_trades)}\n\n"
+                    f"✅ All trades executed successfully!\n"
+                    f"Monitor will track positions every 2 minutes."
+                )
+                await self._send_discord_alert(summary, {})
             
             return {
                 "status": "success",
@@ -421,10 +695,14 @@ class OrchestratorAgent(BaseAgent):
     
     async def monitor_and_exit(self) -> Dict[str, Any]:
         """
-        Monitor positions and execute exits when conditions are met.
+        Monitor positions and execute exits when needed.
+        
+        NOTE: This runs INDEPENDENTLY of auto_trading_enabled.
+        Position monitoring and exits ALWAYS work, even if auto-trading is disabled.
+        Only NEW trade entries are affected by auto_trading_enabled.
         
         Returns:
-            Monitoring result
+            Workflow result
         """
         try:
             if self.paused:

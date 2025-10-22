@@ -10,7 +10,11 @@ from discord.ext import commands
 from loguru import logger
 
 from config import settings, update_trading_mode
-from services import get_alpaca_service, get_database_service
+from services import get_alpaca_service, get_database_service, get_discord_conversation_service
+from services.discord_realtime_service import get_discord_realtime_service
+from services.discord_interactive_service import get_discord_interactive_service
+from services.discord_alerts_service import get_discord_alerts_service
+from services.discord_analytics_service import get_discord_analytics_service
 from bot.discord_helpers import (
     create_status_embed,
     create_position_embed,
@@ -41,17 +45,158 @@ class TradingBot(commands.Bot):
         # Track position threads for organized updates
         self.position_threads = {}  # {symbol: thread_id}
         
+        # Enhancement services (will be initialized in setup_hook)
+        self.realtime_service = None
+        self.interactive_service = None
+        self.alerts_service = None
+        self.analytics_service = None
+        self.conversation_service = None
+        
         logger.info("Discord bot initialized")
     
     async def setup_hook(self):
         """Setup hook called when bot is ready."""
         await self.tree.sync()
         logger.info("Command tree synced")
+        
+        # Initialize enhancement services
+        try:
+            self.realtime_service = get_discord_realtime_service(self)
+            self.interactive_service = get_discord_interactive_service(self)
+            self.alerts_service = get_discord_alerts_service(self)
+            self.analytics_service = get_discord_analytics_service(self)
+            self.conversation_service = get_discord_conversation_service(self)
+            
+            # Start all services
+            self.realtime_service.start_monitoring()
+            self.alerts_service.start_monitoring()
+            self.analytics_service.start_reporting()
+            
+            logger.info("✅ All enhancement services activated")
+        except Exception as e:
+            logger.warning(f"Enhancement services initialization failed: {e}. Bot will run with basic features.")
+    
+    def set_orchestrator(self, orchestrator):
+        """Set orchestrator reference for commands that need it."""
+        self.orchestrator = orchestrator
+        logger.info("Orchestrator reference set in bot")
     
     async def on_ready(self):
-        """Called when bot is ready."""
-        logger.info(f"Bot logged in as {self.user}")
-        await self.send_notification("🤖 Trading bot is online!")
+        """Called when the bot is ready."""
+        logger.info(f"🌟 TARA logged in as {self.user}")
+        
+        # Set status
+        await self.change_presence(
+            status=discord.Status.online,
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,
+                name="📊 Market Opportunities"
+            )
+        )
+    
+    async def on_reaction_add(self, reaction, user):
+        """Handle reaction additions for NLP confirmations."""
+        if user.bot:
+            return
+            
+        # Check if this message has a reaction handler
+        if hasattr(self, '_reaction_handlers'):
+            handler = self._reaction_handlers.get(reaction.message.id)
+            if handler:
+                handled = await handler.handle_reaction(reaction, user)
+                if handled:
+                    # Remove handler after use
+                    del self._reaction_handlers[reaction.message.id]
+    
+    async def on_message(self, message: discord.Message):
+        """Handle natural language conversations with session management."""
+        # Always ignore other bots
+        if message.author.bot:
+            return
+        
+        try:
+            # Only respond in the configured notification channel or its threads
+            allowed = False
+            if message.channel.id == self.notification_channel_id:
+                allowed = True
+            elif isinstance(message.channel, discord.Thread):
+                parent = message.channel.parent
+                if parent and parent.id == self.notification_channel_id:
+                    allowed = True
+            # Also allow if the bot is mentioned anywhere or in DMs
+            if not allowed:
+                try:
+                    if isinstance(message.channel, discord.DMChannel):
+                        allowed = True
+                    elif self.user and self.user in getattr(message, "mentions", []):
+                        allowed = True
+                except Exception:
+                    pass
+            
+            if allowed and self.conversation_service:
+                # Pass the message to conversation service (handles session management internally)
+                reply = await self.conversation_service.handle_message(message)
+                if reply:
+                    # Check if reply needs reaction confirmation (trading actions)
+                    if isinstance(reply, dict) and reply.get("needs_reaction_confirmation"):
+                        logger.info("NLP reaction confirmation requested")
+                        # Send message and add reactions
+                        sent_message = await message.reply(
+                            reply.get("content", "Confirm action?"),
+                            mention_author=False
+                        )
+                        
+                        # Create reaction confirmation handler
+                        from services.discord_conversation_service import ReactionConfirmation
+                        reaction_handler = ReactionConfirmation(
+                            reply.get("action_data"),
+                            self.conversation_service,
+                            reply.get("user_id"),
+                            sent_message
+                        )
+                        await reaction_handler.setup_reactions()
+                        
+                        # Store handler for reaction events
+                        if not hasattr(self, '_reaction_handlers'):
+                            self._reaction_handlers = {}
+                        self._reaction_handlers[sent_message.id] = reaction_handler
+                        
+                    # Check if reply needs general reactions (all responses)
+                    elif isinstance(reply, dict) and reply.get("needs_reactions"):
+                        logger.info("NLP general reactions requested")
+                        # Send message and add feedback reactions
+                        sent_message = await message.reply(
+                            reply.get("content", "Here's what I found."),
+                            mention_author=False
+                        )
+                        
+                        # Add general feedback reactions
+                        await sent_message.add_reaction("👍")  # Good response
+                        await sent_message.add_reaction("👎")  # Bad response
+                        await sent_message.add_reaction("❓")  # Need more info
+                        
+                    # Check if reply needs confirmation (has buttons) - legacy
+                    elif isinstance(reply, dict) and reply.get("needs_confirmation"):
+                        logger.info("NLP confirmation requested; sending confirmation view")
+                        # Send with confirmation buttons
+                        await message.reply(
+                            reply.get("content", "Confirm action?"),
+                            view=reply.get("view"),
+                            mention_author=False
+                        )
+                    else:
+                        # Regular text reply - add basic reactions
+                        reply_text = reply if isinstance(reply, str) else reply.get("content", str(reply))
+                        sent_message = await message.reply(reply_text, mention_author=False)
+                        
+                        # Add basic feedback reactions to ALL responses
+                        await sent_message.add_reaction("👍")
+                        await sent_message.add_reaction("👎")
+        except Exception as e:
+            logger.error(f"Error in on_message: {e}")
+        finally:
+            # Ensure slash commands still work
+            await self.process_commands(message)
     
     async def send_notification(self, message: str, embed: Optional[discord.Embed] = None, symbol: Optional[str] = None):
         """
@@ -221,10 +366,46 @@ async def status_command(interaction: discord.Interaction):
         last_scan = "Just now"
         last_trade = "N/A"
         
-        # Build status data
+        # Get strategy status
+        strategies_status = {}
+        if bot.orchestrator and hasattr(bot.orchestrator, 'strategy_agent'):
+            try:
+                from strategies.strategy_manager import StrategyManager
+                manager = StrategyManager()
+                for name in manager.active_strategies:
+                    strategies_status[name.replace('_', ' ').title()] = {
+                        'active': True,
+                        'signals_today': 0  # TODO: Track signals per day
+                    }
+            except:
+                pass
+        
+        # Calculate today's trades
+        today_trades_count = len([t for t in today_trades if datetime.fromisoformat(t.get('timestamp', '')).date() == today]) if today_trades else 0
+        today_wins = len([t for t in today_trades if datetime.fromisoformat(t.get('timestamp', '')).date() == today and float(t.get('profit_loss', 0)) > 0]) if today_trades else 0
+        today_win_rate = (today_wins / today_trades_count * 100) if today_trades_count > 0 else 0
+        
+        # Get largest position
+        largest_pos = max(positions, key=lambda x: float(x.get('market_value', 0))) if positions else None
+        largest_pos_symbol = largest_pos.get('symbol', 'N/A') if largest_pos else 'N/A'
+        
+        # Calculate total risk (sum of stop loss distances)
+        total_risk = sum(
+            abs(float(pos.get('current_price', 0)) - float(pos.get('avg_entry_price', 0))) * float(pos.get('qty', 0)) * 0.02
+            for pos in positions
+        )
+        
+        # Get watchlist size
+        watchlist_size = len(bot.orchestrator.data_pipeline.watchlist) if bot.orchestrator and bot.orchestrator.data_pipeline else 0
+        
+        # Calculate portfolio heat (simplified)
+        equity = float(account.get('equity', 1))
+        portfolio_heat = (total_risk / equity * 100) if equity > 0 else 0
+        
+        # Build comprehensive status data
         status_data = {
             'running': not bot.system_paused,
-            'status': 'Running' if not bot.system_paused else 'Paused',
+            'status': 'ACTIVE' if not bot.system_paused else 'PAUSED',
             'mode': settings.trading_mode,
             'paused': bot.system_paused,
             'account': account,
@@ -233,6 +414,17 @@ async def status_command(interaction: discord.Interaction):
                 'total_pl': total_pl,
                 'today_pl': today_pl
             },
+            'today_trades': today_trades_count,
+            'today_win_rate': today_win_rate,
+            'largest_position': largest_pos_symbol,
+            'total_risk': total_risk,
+            'strategies': strategies_status,
+            'last_scan': last_scan,
+            'next_scan': '5 minutes' if not bot.system_paused else 'Paused',
+            'symbols_watching': watchlist_size,
+            'opportunities_found': 0,  # TODO: Track from last scan
+            'portfolio_heat': portfolio_heat,
+            'heat_limit': 6.0,
             'performance': {
                 'win_rate': metrics.get('win_rate', 0),
                 'total_trades': metrics.get('total_trades', 0),
@@ -243,7 +435,6 @@ async def status_command(interaction: discord.Interaction):
                 'daily_loss': daily_loss,
                 'limit': getattr(settings, 'max_daily_loss', 1000)
             },
-            'last_scan': last_scan,
             'last_trade': last_trade,
             'uptime': 'N/A'  # TODO: Track uptime
         }
@@ -316,6 +507,226 @@ async def sell_command(interaction: discord.Interaction, symbol: str):
     except Exception as e:
         logger.error(f"Error in sell command: {e}")
         embed = create_error_embed(f"Error selling position: {str(e)}")
+        await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="buy", description="Buy stock with AI analysis")
+@app_commands.describe(
+    symbol="Stock symbol to buy",
+    quantity="Number of shares (optional, will suggest if not provided)"
+)
+async def buy_command(interaction: discord.Interaction, symbol: str, quantity: int = None):
+    """Buy stock with AI analysis and recommendations."""
+    await interaction.response.defer()
+    
+    try:
+        symbol = symbol.upper()
+        from services.buy_assistant_service import get_buy_assistant_service
+        buy_assistant = get_buy_assistant_service()
+        
+        # Analyze the buy opportunity
+        analysis = await buy_assistant.analyze_buy_opportunity(symbol)
+        
+        if "error" in analysis:
+            embed = create_error_embed(f"Error analyzing {symbol}: {analysis['error']}")
+            await interaction.followup.send(embed=embed)
+            return
+        
+        current_price = analysis["current_price"]
+        buying_power = analysis["buying_power"]
+        max_shares = analysis["max_shares"]
+        
+        # If no quantity specified, suggest an amount
+        if quantity is None:
+            # Suggest 5% of buying power worth of shares
+            suggested_value = buying_power * 0.05
+            quantity = int(suggested_value / current_price)
+            quantity = max(1, min(quantity, max_shares))  # At least 1, at most max_shares
+        
+        # Validate quantity
+        estimated_cost = current_price * quantity
+        if estimated_cost > buying_power:
+            embed = create_error_embed(
+                f"**Insufficient Buying Power**\n\n"
+                f"Cost: ${estimated_cost:,.2f}\n"
+                f"Available: ${buying_power:,.2f}\n"
+                f"Max shares you can buy: {max_shares}"
+            )
+            await interaction.followup.send(embed=embed)
+            return
+        
+        # Create confirmation embed
+        embed = discord.Embed(
+            title=f"💰 Confirm Buy Order - {symbol}",
+            description=f"Review your order details before confirming",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Symbol", value=symbol, inline=True)
+        embed.add_field(name="Quantity", value=f"{quantity} shares", inline=True)
+        embed.add_field(name="Current Price", value=f"${current_price:.2f}", inline=True)
+        embed.add_field(name="Estimated Cost", value=f"${estimated_cost:,.2f}", inline=True)
+        embed.add_field(name="Buying Power After", value=f"${buying_power - estimated_cost:,.2f}", inline=True)
+        embed.add_field(name="Order Type", value="Market Order", inline=True)
+        
+        # Create confirmation view
+        class BuyConfirmView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=60)
+                self.confirmed = None
+            
+            @discord.ui.button(label="✅ Confirm Buy", style=discord.ButtonStyle.green)
+            async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self.confirmed = True
+                self.stop()
+                
+                # Execute the buy
+                result = await buy_assistant.execute_stock_buy(symbol, quantity)
+                
+                if result["success"]:
+                    success_embed = create_success_embed(
+                        f"**✅ Buy Order Executed**\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Quantity: {quantity} shares\n"
+                        f"Estimated Cost: ${result['estimated_cost']:,.2f}\n"
+                        f"Order ID: {result['order'].get('id', 'N/A')}"
+                    )
+                    await interaction.response.edit_message(embed=success_embed, view=None)
+                else:
+                    error_embed = create_error_embed(f"Failed to execute buy order: {result.get('error', 'Unknown error')}")
+                    await interaction.response.edit_message(embed=error_embed, view=None)
+            
+            @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.red)
+            async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self.confirmed = False
+                self.stop()
+                cancel_embed = create_error_embed("Buy order cancelled")
+                await interaction.response.edit_message(embed=cancel_embed, view=None)
+        
+        view = BuyConfirmView()
+        await interaction.followup.send(embed=embed, view=view)
+        
+    except Exception as e:
+        logger.error(f"Error in buy command: {e}")
+        embed = create_error_embed(f"Error processing buy order: {str(e)}")
+        await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="buy-option", description="Buy options with Greeks analysis")
+@app_commands.describe(
+    symbol="Stock symbol",
+    strategy="Call or Put",
+    max_risk="Maximum risk per contract (default: $1000)"
+)
+@app_commands.choices(strategy=[
+    app_commands.Choice(name="Call", value="call"),
+    app_commands.Choice(name="Put", value="put")
+])
+async def buy_option_command(
+    interaction: discord.Interaction,
+    symbol: str,
+    strategy: app_commands.Choice[str],
+    max_risk: float = 1000.0
+):
+    """Buy options with AI-powered Greeks analysis."""
+    await interaction.response.defer()
+    
+    try:
+        symbol = symbol.upper()
+        strategy_type = strategy.value
+        
+        from services.buy_assistant_service import get_buy_assistant_service
+        buy_assistant = get_buy_assistant_service()
+        
+        # Find best options
+        best_options = await buy_assistant.find_best_options(
+            symbol=symbol,
+            strategy=strategy_type,
+            max_risk=max_risk,
+            target_delta=0.5
+        )
+        
+        if not best_options:
+            embed = create_error_embed(
+                f"**No suitable {strategy_type} options found for {symbol}**\n\n"
+                f"Try adjusting your max risk or check if options are available for this symbol."
+            )
+            await interaction.followup.send(embed=embed)
+            return
+        
+        # Show top 3 options
+        embed = discord.Embed(
+            title=f"📊 Best {strategy_type.upper()} Options for {symbol}",
+            description=f"Top recommendations based on Greeks analysis (Max Risk: ${max_risk:,.2f})",
+            color=discord.Color.blue()
+        )
+        
+        for i, option in enumerate(best_options[:3], 1):
+            field_value = (
+                f"**Strike:** ${option['strike']:.2f} | **Expires:** {option['days_to_exp']} days\n"
+                f"**Cost:** ${option['contract_cost']:.2f} | **Risk:** {option['risk_level']}\n"
+                f"**Greeks:** Δ={option['delta']:.3f} | Θ={option['theta']:.4f} | Γ={option['gamma']:.4f}\n"
+                f"**Score:** {option['score']:.1f}/100\n"
+                f"💡 {option['recommendation']}"
+            )
+            embed.add_field(
+                name=f"#{i} - {option['symbol']}",
+                value=field_value,
+                inline=False
+            )
+        
+        embed.set_footer(text="Use the buttons below to select and buy an option")
+        
+        # Create selection view
+        class OptionSelectView(discord.ui.View):
+            def __init__(self, options_list):
+                super().__init__(timeout=120)
+                self.options_list = options_list
+                
+                # Add buttons for each option
+                for i in range(min(3, len(options_list))):
+                    button = discord.ui.Button(
+                        label=f"Buy Option #{i+1}",
+                        style=discord.ButtonStyle.green,
+                        custom_id=f"buy_option_{i}"
+                    )
+                    button.callback = self.create_callback(i)
+                    self.add_item(button)
+            
+            def create_callback(self, index):
+                async def callback(interaction: discord.Interaction):
+                    option = self.options_list[index]
+                    
+                    # Execute buy
+                    result = await buy_assistant.execute_option_buy(
+                        option_symbol=option['symbol'],
+                        quantity=1,
+                        order_type="limit",
+                        limit_price=option['ask']  # Use ask price for limit order
+                    )
+                    
+                    if result["success"]:
+                        success_embed = create_success_embed(
+                            f"**✅ Option Buy Order Placed**\n\n"
+                            f"Contract: {option['symbol']}\n"
+                            f"Strike: ${option['strike']:.2f}\n"
+                            f"Expiration: {option['expiration']}\n"
+                            f"Cost: ${option['contract_cost']:.2f}\n"
+                            f"Delta: {option['delta']:.3f}\n"
+                            f"Order ID: {result['order'].get('id', 'N/A')}"
+                        )
+                        await interaction.response.edit_message(embed=success_embed, view=None)
+                    else:
+                        error_embed = create_error_embed(f"Failed to place option order: {result.get('error', 'Unknown error')}")
+                        await interaction.response.edit_message(embed=error_embed, view=None)
+                
+                return callback
+        
+        view = OptionSelectView(best_options)
+        await interaction.followup.send(embed=embed, view=view)
+        
+    except Exception as e:
+        logger.error(f"Error in buy-option command: {e}")
+        embed = create_error_embed(f"Error finding options: {str(e)}")
         await interaction.followup.send(embed=embed)
 
 
@@ -418,9 +829,8 @@ async def switch_mode_command(interaction: discord.Interaction, mode: app_comman
         update_trading_mode(new_mode)
         
         # Reinitialize Alpaca service
-        from services.alpaca_service import _alpaca_service
-        global _alpaca_service
-        _alpaca_service = None
+        from services.alpaca_service import reset_alpaca_service
+        reset_alpaca_service()
         
         db = get_database_service()
         await db.set_system_state("trading_mode", new_mode)
@@ -462,16 +872,43 @@ async def trades_command(interaction: discord.Interaction, limit: int = 10):
             timestamp = trade['timestamp']
             action_emoji = "🟢" if trade['action'].lower() == 'buy' else "🔴"
             
+            # Get trade status and color code it
+            status = trade.get('status', 'unknown').upper()
+            status_emoji = {
+                'FILLED': '✅',
+                'PENDING': '⏳',
+                'SUBMITTED': '⏳',
+                'ACCEPTED': '⏳',
+                'REJECTED': '❌',
+                'CANCELED': '❌',
+                'CANCELLED': '❌',
+                'PARTIAL': '⚠️',
+                'PARTIAL_FILL': '⚠️'
+            }.get(status, '❓')
+            
+            # Determine field color based on status
+            status_color = {
+                'FILLED': '🟢',
+                'PENDING': '🟡',
+                'SUBMITTED': '🟡',
+                'ACCEPTED': '🟡',
+                'REJECTED': '🔴',
+                'CANCELED': '🔴',
+                'CANCELLED': '🔴',
+                'PARTIAL': '🟠',
+                'PARTIAL_FILL': '🟠'
+            }.get(status, '⚪')
+            
             value = (
-                f"Action: {action_emoji} {trade['action'].upper()}\n"
-                f"Qty: {trade['quantity']}\n"
-                f"Price: ${trade['price']:.2f}\n"
-                f"Total: ${trade['total_value']:,.2f}\n"
-                f"Time: {timestamp}"
+                f"{status_color} **Status:** {status_emoji} {status}\n"
+                f"**Action:** {action_emoji} {trade['action'].upper()}\n"
+                f"**Qty:** {trade['quantity']} | **Price:** ${trade['price']:.2f}\n"
+                f"**Total:** ${trade['total_value']:,.2f}\n"
+                f"**Time:** {timestamp[:19]}"
             )
             
             embed.add_field(
-                name=trade['symbol'],
+                name=f"{trade['symbol']}",
                 value=value,
                 inline=True
             )
@@ -526,47 +963,64 @@ async def performance_command(interaction: discord.Interaction, days: int = 30):
 
 @bot.tree.command(name="account", description="View account details")
 async def account_command(interaction: discord.Interaction):
-    """View detailed account information."""
+    """View detailed account information with Tara formatting."""
     await interaction.response.defer()
     
     try:
+        from services import get_api_tracker, get_database_service
+        from services.performance_metrics_service import get_performance_metrics_service
+        from bot.discord_helpers import format_account_summary
+        from datetime import date
+        
         alpaca = get_alpaca_service()
+        db = get_database_service()
+        
         account = await alpaca.get_account()
+        positions = await alpaca.get_positions()
         
-        embed = discord.Embed(
-            title="💰 Account Details",
-            color=discord.Color.gold()
+        # Get API tracker stats
+        api_tracker = get_api_tracker()
+        api_status = await api_tracker.get_status("Alpaca")
+        
+        # Calculate actual P&L from today's trades
+        today = date.today().isoformat()
+        trades_today = await db.get_recent_trades(100)
+        closed_pl_today = sum(
+            float(t.get('total_value', 0)) 
+            for t in trades_today 
+            if t.get('timestamp', '').startswith(today) and t.get('action') == 'sell'
         )
         
-        embed.add_field(
-            name="Balance",
-            value=(
-                f"Portfolio Value: ${account['equity']:,.2f}\n"
-                f"Cash: ${account['cash']:,.2f}\n"
-                f"Buying Power: ${account['buying_power']:,.2f}"
-            ),
-            inline=False
-        )
+        # Calculate daily return
+        equity_start = float(account.get('last_equity', account['equity']))
+        current_equity = float(account['equity'])
+        daily_return_pct = ((current_equity - equity_start) / equity_start * 100) if equity_start > 0 else 0
         
-        embed.add_field(
-            name="Day Trading",
-            value=(
-                f"Day Trades: {account.get('daytrade_count', 0)}\n"
-                f"PDT: {'Yes' if account.get('pattern_day_trader') else 'No'}"
-            ),
-            inline=True
-        )
+        # Calculate total return (from initial capital)
+        initial_capital = 100000.0  # Default initial capital for paper trading
+        total_return_pct = ((current_equity - initial_capital) / initial_capital * 100) if initial_capital > 0 else 0
         
-        embed.add_field(
-            name="Status",
-            value=(
-                f"Trading Blocked: {'Yes' if account.get('trading_blocked') else 'No'}\n"
-                f"Account Blocked: {'Yes' if account.get('account_blocked') else 'No'}"
-            ),
-            inline=True
-        )
+        # Get performance metrics (NEW)
+        perf_service = get_performance_metrics_service(db)
+        performance_metrics = await perf_service.calculate_metrics(days=30)
         
-        await interaction.followup.send(embed=embed)
+        # Prepare account data for Tara formatting
+        account_data = {
+            'account_name': f"Alpaca ({settings.trading_mode.upper()})",
+            'cash': account['cash'],
+            'equity': account['equity'],
+            'buying_power': account['buying_power'],
+            'positions': positions,
+            'equity_start_of_day': equity_start,
+            'closed_pl_today': closed_pl_today,
+            'daily_return_pct': daily_return_pct,
+            'total_return_pct': total_return_pct
+        }
+        
+        # Use Tara's formatted message with performance metrics
+        message = format_account_summary(account_data, api_status['calls_today'], performance_metrics)
+        
+        await interaction.followup.send(message)
         
     except Exception as e:
         logger.error(f"Error in account command: {e}")
@@ -743,6 +1197,107 @@ async def circuit_breaker_command(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Error checking circuit breaker: {str(e)}")
 
 
+@bot.tree.command(name="auto-trade", description="⚙️ Check or toggle automatic trading")
+@app_commands.describe(action="Action: status, enable, or disable")
+async def auto_trade_command(interaction: discord.Interaction, action: str = "status"):
+    """Check or toggle automatic trading."""
+    await interaction.response.defer()
+    
+    try:
+        from config import settings
+        
+        action = action.lower()
+        
+        if action == "enable":
+            # Note: This only changes in-memory, not .env file
+            settings.auto_trading_enabled = True
+            
+            embed = discord.Embed(
+                title="✅ Auto-Trading ENABLED",
+                description="Bot will now automatically execute trades when high-confidence signals are detected.",
+                color=discord.Color.green()
+            )
+            embed.add_field(
+                name="⚠️ Important",
+                value="• Trades will execute automatically\n"
+                      "• Review alerts before they execute\n"
+                      "• Monitor positions closely\n"
+                      "• Use `/auto-trade disable` to stop",
+                inline=False
+            )
+            
+            logger.info("Auto-trading ENABLED via Discord command")
+            
+        elif action == "disable":
+            settings.auto_trading_enabled = False
+            
+            embed = discord.Embed(
+                title="⏸️ Auto-Trading DISABLED",
+                description="Bot will send alerts only. No automatic trade execution.",
+                color=discord.Color.orange()
+            )
+            embed.add_field(
+                name="ℹ️ Info",
+                value="• You'll receive alerts for opportunities\n"
+                      "• Review AI insights\n"
+                      "• Execute trades manually if desired\n"
+                      "• **Monitor still works** - existing positions managed\n"
+                      "• Use `/auto-trade enable` to resume",
+                inline=False
+            )
+            
+            logger.info("Auto-trading DISABLED via Discord command")
+            
+        else:  # status
+            status = "ENABLED ✅" if settings.auto_trading_enabled else "DISABLED ⏸️"
+            color = discord.Color.green() if settings.auto_trading_enabled else discord.Color.orange()
+            
+            embed = discord.Embed(
+                title=f"⚙️ Auto-Trading Status: {status}",
+                description="Current automatic trading configuration",
+                color=color
+            )
+            
+            embed.add_field(
+                name="Status",
+                value=status,
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Mode",
+                value=f"{settings.trading_mode.upper()}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Max Positions",
+                value=f"{settings.max_open_positions}",
+                inline=True
+            )
+            
+            if settings.auto_trading_enabled:
+                embed.add_field(
+                    name="⚠️ Active Trading",
+                    value="Bot will execute trades automatically when signals are detected.",
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="ℹ️ Alerts Only",
+                    value="Bot will send alerts but not execute NEW trades.\n"
+                          "**Monitor still active** - existing positions are managed automatically.\n"
+                          "Use `/auto-trade enable` to start trading.",
+                    inline=False
+                )
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error in auto-trade command: {e}")
+        await interaction.followup.send(f"❌ Error managing auto-trade: {str(e)}")
+
+
 @bot.tree.command(name="scan-now", description="Trigger an immediate opportunity scan")
 async def scan_now_command(interaction: discord.Interaction):
     """Trigger an immediate scan for opportunities."""
@@ -802,10 +1357,113 @@ async def scan_now_command(interaction: discord.Interaction):
                     symbol = opp.get('symbol', 'N/A')
                     score = opp.get('score', 0)
                     action = opp.get('action', 'N/A')
-                    opp_text += f"• **{symbol}**: Score {score}/100 - {action}\n"
+                    
+                    # NEW: Get strategy signal and MTF data
+                    rec = opp.get('recommendation', {})
+                    strategy_signal = rec.get('strategy_signal')
+                    mtf_analysis = rec.get('mtf_analysis')
+                    
+                    # Score emoji
+                    if score >= 80:
+                        score_emoji = "🟢"
+                        score_label = "STRONG"
+                    elif score >= 60:
+                        score_emoji = "🟡"
+                        score_label = "MODERATE"
+                    else:
+                        score_emoji = "⚪"
+                        score_label = "WEAK"
+                    
+                    opp_text += f"**{symbol}** {score_emoji} Score: {score}/100 ({score_label})\n"
+                    opp_text += f"  📊 Action: {action}\n"
+                    
+                    # Get current price and reasoning
+                    current_price = opp.get('current_price', 0)
+                    reasoning = opp.get('reasoning', '')
+                    
+                    # Show strategy signal if available
+                    if strategy_signal:
+                        strategy_name = strategy_signal.get('strategy', 'Quant Analysis')
+                        strategy_action = strategy_signal.get('action', 'N/A')
+                        
+                        if strategy_action != 'HOLD':
+                            opp_text += f"  🎯 **Strategy:** {strategy_name} ({strategy_action})\n"
+                            
+                            # Show entry/stop/target with R:R if BUY/SELL
+                            if strategy_action in ['BUY', 'SELL']:
+                                entry = strategy_signal.get('entry_price', 0)
+                                stop = strategy_signal.get('stop_loss', 0)
+                                target = strategy_signal.get('take_profit', 0)
+                                
+                                # Calculate R:R
+                                risk = abs(entry - stop)
+                                reward = abs(target - entry)
+                                rr_ratio = reward / risk if risk > 0 else 0
+                                
+                                opp_text += f"  💰 Entry: ${entry:.2f} | Stop: ${stop:.2f} | Target: ${target:.2f}\n"
+                                opp_text += f"  📊 Risk/Reward: 1:{rr_ratio:.1f}\n"
+                                
+                                # Show strategy reason
+                                strategy_reason = strategy_signal.get('reason', '')
+                                if strategy_reason:
+                                    # Truncate if too long
+                                    reason_short = strategy_reason[:80] + "..." if len(strategy_reason) > 80 else strategy_reason
+                                    opp_text += f"  💡 Why: {reason_short}\n"
+                        else:
+                            # Show detailed HOLD status
+                            conditions_needed = strategy_signal.get('conditions_needed', [])
+                            if conditions_needed:
+                                # Show first condition needed
+                                opp_text += f"  ⚪ Quant: {conditions_needed[0][:60]}...\n" if len(conditions_needed[0]) > 60 else f"  ⚪ Quant: {conditions_needed[0]}\n"
+                            else:
+                                opp_text += f"  ⚪ Quant: No setup (waiting for entry)\n"
+                    
+                    # Show MTF alignment if available
+                    if mtf_analysis and mtf_analysis.get('available'):
+                        alignment = mtf_analysis.get('alignment', {}).get('alignment', 'UNKNOWN')
+                        if alignment != 'UNKNOWN':
+                            # Use emojis for alignment
+                            if 'BULLISH' in alignment:
+                                mtf_emoji = "📈"
+                            elif 'BEARISH' in alignment:
+                                mtf_emoji = "📉"
+                            else:
+                                mtf_emoji = "📊"
+                            opp_text += f"  {mtf_emoji} **MTF:** {alignment}\n"
+                    
+                    # Show momentum data if available
+                    momentum = rec.get('momentum', {})
+                    if momentum:
+                        momentum_score = momentum.get('score', 0)
+                        if momentum_score > 0:
+                            opp_text += f"  🚀 Momentum: {momentum_score:.0f}/100\n"
+                    
+                    # Show key technical indicators if available
+                    indicators = strategy_signal.get('indicators', {}) if strategy_signal else {}
+                    if indicators:
+                        # Show most relevant indicators
+                        rsi = indicators.get('rsi')
+                        volume_ratio = indicators.get('volume_ratio')
+                        
+                        if rsi is not None:
+                            rsi_label = "Oversold" if rsi < 30 else "Overbought" if rsi > 70 else "Neutral"
+                            opp_text += f"  📊 RSI: {rsi:.0f} ({rsi_label})\n"
+                        
+                        if volume_ratio is not None and volume_ratio > 1:
+                            opp_text += f"  📊 Volume: {volume_ratio:.1f}x average\n"
+                    
+                    # Show AI reasoning (truncated)
+                    if reasoning and strategy_signal and strategy_signal.get('action') != 'HOLD':
+                        # Extract first sentence or first 100 chars
+                        first_sentence = reasoning.split('.')[0] if '.' in reasoning else reasoning[:100]
+                        if len(first_sentence) > 100:
+                            first_sentence = first_sentence[:100] + "..."
+                        opp_text += f"  💭 {first_sentence}\n"
+                    
+                    opp_text += "\n"
                 
                 embed.add_field(
-                    name="🎯 Top Opportunities",
+                    name="🎯 Top Opportunities (with Quantitative Signals)",
                     value=opp_text or "No details available",
                     inline=False
                 )
@@ -1227,34 +1885,48 @@ async def update_limit_command(interaction: discord.Interaction, limit_type: str
 @bot.tree.command(name="sentiment", description="📊 Check sentiment for a symbol")
 @app_commands.describe(symbol="Stock symbol to analyze")
 async def sentiment_command(interaction: discord.Interaction, symbol: str):
-    """Check sentiment analysis for a symbol."""
+    """Check sentiment analysis for a symbol with real market data."""
     await interaction.response.defer()
     
     try:
         symbol = symbol.upper()
         
-        # Import sentiment service
-        from services.sentiment_service import get_sentiment_service
+        await interaction.followup.send(f"🔍 Analyzing {symbol} sentiment...\n⏳ Gathering news, options flow, and technical data...")
         
-        sentiment_service = get_sentiment_service()
+        # Use enhanced sentiment service with real data
+        from services.enhanced_sentiment_service import get_enhanced_sentiment_service
+        from services import get_alpaca_service, get_news_service
         
-        # Set services if available
-        if bot.orchestrator:
-            from services import get_llm_service, get_alpaca_service, get_news_service
-            from services.claude_service import get_claude_service
-            sentiment_service.set_llm(get_llm_service())
-            sentiment_service.set_alpaca(get_alpaca_service())
-            sentiment_service.set_news(get_news_service())
-            sentiment_service.set_claude(get_claude_service())  # Add Claude for better analysis
+        alpaca = get_alpaca_service()
+        news = get_news_service()
         
-        await interaction.followup.send(f"🔍 Analyzing {symbol} for trading opportunities...\n⏳ Gathering data and running AI analysis...")
+        # Get or create enhanced sentiment service
+        enhanced_sentiment = get_enhanced_sentiment_service(alpaca, news)
         
-        # Get NEW comprehensive trading analysis (uses GPT-4o-mini)
-        analysis = await sentiment_service.analyze_for_trading(symbol)
-        
-        # Use new comprehensive trading embed
-        from bot.discord_helpers import create_trading_analysis_embed
-        embed = create_trading_analysis_embed(analysis)
+        if not enhanced_sentiment:
+            # Fallback to old service
+            logger.warning("Enhanced sentiment service not available, using fallback")
+            from services.sentiment_service import get_sentiment_service
+            sentiment_service = get_sentiment_service()
+            
+            if bot.orchestrator:
+                from services import get_llm_service
+                from services.claude_service import get_claude_service
+                sentiment_service.set_llm(get_llm_service())
+                sentiment_service.set_alpaca(alpaca)
+                sentiment_service.set_news(news)
+                sentiment_service.set_claude(get_claude_service())
+            
+            analysis = await sentiment_service.analyze_for_trading(symbol)
+            from bot.discord_helpers import create_trading_analysis_embed
+            embed = create_trading_analysis_embed(analysis)
+        else:
+            # Use new enhanced sentiment analysis
+            sentiment_data = await enhanced_sentiment.analyze_sentiment(symbol)
+            
+            # Create enhanced embed
+            from bot.discord_helpers import create_enhanced_sentiment_embed
+            embed = create_enhanced_sentiment_embed(sentiment_data)
         
         # Check if already in watchlist
         alpaca = get_alpaca_service()
@@ -1295,9 +1967,26 @@ Use `/watchlist` to see all monitored stocks.
                         return
                     self.responded = True
                     
-                    # Add to watchlist
+                    # Add to watchlist (use default watchlist or create one)
                     alpaca = get_alpaca_service()
-                    success = await alpaca.add_to_watchlist(self.symbol)
+                    # Try to get or create a default watchlist
+                    try:
+                        watchlists = await alpaca.get_watchlists()
+                        default_watchlist = None
+                        for wl in watchlists:
+                            if wl.get('name') == 'TARA-Main':
+                                default_watchlist = wl.get('id')
+                                break
+                        
+                        if not default_watchlist:
+                            # Create default watchlist
+                            new_wl = await alpaca.create_watchlist('TARA-Main', [self.symbol])
+                            success = new_wl is not None
+                        else:
+                            success = await alpaca.add_to_watchlist(default_watchlist, self.symbol)
+                    except Exception as e:
+                        logger.error(f"Error adding to watchlist: {e}")
+                        success = False
                     
                     if success:
                         response_msg = f"""✅ **{self.symbol}** added to watchlist!
@@ -1340,7 +2029,11 @@ Use `/watchlist` to see all monitored stocks."""
                 view=view
             )
         
-        logger.info(f"Trading analysis for {symbol}: {analysis.get('recommendation', 'N/A')}")
+        # Log sentiment result
+        if enhanced_sentiment:
+            logger.info(f"Enhanced sentiment analysis for {symbol}: {sentiment_data.get('overall_sentiment', {}).get('label', 'N/A')}")
+        elif 'analysis' in locals():
+            logger.info(f"Trading analysis for {symbol}: {analysis.get('recommendation', 'N/A')}")
         
     except Exception as e:
         logger.error(f"Error in sentiment command: {e}")
@@ -1434,34 +2127,47 @@ async def circuit_breaker_set_command(interaction: discord.Interaction, amount: 
 
 @bot.tree.command(name="api-status", description="📡 Check API connections and usage")
 async def api_status_command(interaction: discord.Interaction):
-    """Check all API connections and usage."""
+    """Check all API connections and usage with Tara formatting."""
     await interaction.response.defer()
     
     try:
+        from services import get_api_tracker
+        from bot.discord_helpers import format_api_status
         from datetime import datetime
         
-        embed = discord.Embed(
-            title="📡 API Status",
-            color=discord.Color.blue(),
-            timestamp=datetime.now()
-        )
+        # Get API tracker
+        api_tracker = get_api_tracker()
         
-        # Alpaca
+        # Get Alpaca status
         try:
             alpaca = get_alpaca_service()
             account = await alpaca.get_account()
-            alpaca_status = "🟢 Connected"
-            alpaca_mode = settings.trading_mode.upper()
+            alpaca_connected = True
+            provider_name = f"Alpaca ({settings.trading_mode.upper()})"
         except Exception as e:
-            alpaca_status = f"🔴 Error: {str(e)[:50]}"
-            alpaca_mode = "Unknown"
+            alpaca_connected = False
+            provider_name = "Alpaca (ERROR)"
         
+        # Get real API stats
+        api_status_data = await api_tracker.get_status("Alpaca")
+        
+        # Create embed for API status
+        embed = discord.Embed(
+            title="📡 API Status",
+            description="Real-time API connections and usage",
+            color=discord.Color.blue() if alpaca_connected else discord.Color.red(),
+            timestamp=datetime.now()
+        )
+        
+        # Alpaca API
         embed.add_field(
-            name="📊 Alpaca",
-            value=f"**Status:** {alpaca_status}\n"
-                  f"**Mode:** {alpaca_mode}\n"
-                  f"**Calls Today:** ~13,550 (FREE)",
-            inline=True
+            name="📊 Alpaca API",
+            value=f"**Provider:** {provider_name}\n"
+                  f"**Status:** {'🟢 Connected' if alpaca_connected else '🔴 Disconnected'}\n"
+                  f"**Calls Today:** {api_status_data['calls_today']}\n"
+                  f"**Errors:** {api_status_data['errors']}\n"
+                  f"**Rate Limit:** {api_status_data['rate_limit_used']}/{api_status_data['rate_limit_total']}",
+            inline=False
         )
         
         # NewsAPI
@@ -1535,69 +2241,32 @@ async def api_status_command(interaction: discord.Interaction):
 @bot.tree.command(name="help", description="Show all available commands")
 async def help_command(interaction: discord.Interaction):
     """Show help information."""
-    await interaction.response.defer()
-    
-    embed = discord.Embed(
-        title="🤖 Trading Bot Commands",
-        description="Complete list of available commands",
-        color=discord.Color.blue()
-    )
-    
-    embed.add_field(
-        name="📊 Information",
-        value=(
-            "`/status` - System status overview\n"
-            "`/account` - Account details\n"
-            "`/positions` - Open positions\n"
-            "`/trades [limit]` - Recent trades\n"
-            "`/performance [days]` - Performance metrics\n"
-            "`/quote <symbol>` - Get stock quote\n"
-            "`/sentiment <symbol>` - 📊 Sentiment analysis\n"
-            "`/watchlist` - View watchlist\n"
-            "`/watchlist-add <symbol>` - Add to watchlist\n"
-            "`/watchlist-remove <symbol>` - Remove from watchlist"
-        ),
-        inline=False
-    )
-    
-    embed.add_field(
-        name="⚙️ Control",
-        value=(
-            "`/pause` - Pause trading\n"
-            "`/resume` - Resume trading\n"
-            "`/scan-now` - Trigger immediate scan\n"
-            "`/switch-mode <mode>` - Switch paper/live\n"
-            "`/simulate` - 🧪 Run full system test"
-        ),
-        inline=False
-    )
-    
-    embed.add_field(
-        name="💼 Trading",
-        value=(
-            "`/sell <symbol>` - Sell a position\n"
-            "`/close-all` - ⚠️ Close all positions"
-        ),
-        inline=False
-    )
-    
-    embed.add_field(
-        name="🛡️ Risk",
-        value=(
-            "`/limits` - View risk limits\n"
-            "`/update-limit <type> <value>` - ⚙️ Update limits\n"
-            "`/circuit-breaker` - Check circuit breaker"
-        ),
-        inline=False
-    )
-    
-    embed.add_field(
-        name="ℹ️ Help",
-        value="`/help` - Show this message",
-        inline=False
-    )
-    
-    await interaction.followup.send(embed=embed)
+    try:
+        await interaction.response.send_message(
+            "🌟 **TARA - Enhanced Trading Assistant**\n"
+            "**Trade by Light, Guided by Intelligence**\n\n"
+            "💬 **Natural Language AI** - Just talk to me! Ask: `What's my account?`, `Set stop loss`, etc.\n\n"
+            "**📋 Quick Commands:**\n"
+            "`/status` `/account` `/positions` `/trades` `/performance`\n"
+            "`/quote` `/sentiment` `/analyze` `/monitor` `/scan`\n"
+            "`/sell` `/pause` `/resume` `/limits` `/api-status`\n\n"
+            "**🚀 Enhanced Features:**\n"
+            "✅ Real-time updates • Smart alerts • Daily reports\n"
+            "✅ Interactive controls • Performance analytics\n"
+            "✅ Conversational AI with action execution\n\n"
+            "💡 **Tip:** You can ask me to do things naturally:\n"
+            "• `Set -2% stop loss on all positions`\n"
+            "• `Sell my TSLA position`\n"
+            "• `What's my biggest loser?`\n\n"
+            "Type `/` to see all commands or just chat with me!",
+            ephemeral=False
+        )
+    except Exception as e:
+        logger.error(f"Error in help command: {e}")
+        try:
+            await interaction.response.send_message("Use `/` to see all commands or just chat with me!", ephemeral=True)
+        except:
+            pass
 
 
 @bot.tree.command(name="scan", description="🔍 Scan for trading opportunities")
@@ -1686,6 +2355,10 @@ async def analyze_command(interaction: discord.Interaction, symbol: str):
                 opp = opportunities[0]
                 rec = opp.get('recommendation', {})
                 
+                # NEW: Get strategy and MTF data
+                strategy_signal = rec.get('strategy_signal')
+                mtf_analysis = rec.get('mtf_analysis')
+                
                 embed = discord.Embed(
                     title=f"📈 Deep Analysis: {symbol}",
                     description=f"Current Price: ${opp['current_price']:.2f}",
@@ -1701,6 +2374,65 @@ async def analyze_command(interaction: discord.Interaction, symbol: str):
                           f"**Score:** {opp['score']:.0f}/100",
                     inline=False
                 )
+                
+                # NEW: Quantitative Strategy Signal
+                if strategy_signal:
+                    strategy_name = strategy_signal.get('strategy', 'Quant Analysis')
+                    strategy_action = strategy_signal.get('action', 'N/A')
+                    
+                    if strategy_action != 'HOLD':
+                        entry = strategy_signal.get('entry_price', 0)
+                        stop = strategy_signal.get('stop_loss', 0)
+                        target = strategy_signal.get('take_profit', 0)
+                        
+                        embed.add_field(
+                            name="🎯 Quantitative Strategy",
+                            value=f"**Strategy:** {strategy_name}\n"
+                                  f"**Signal:** {strategy_action}\n"
+                                  f"**Entry:** ${entry:.2f}\n"
+                                  f"**Stop Loss:** ${stop:.2f}\n"
+                                  f"**Target:** ${target:.2f}",
+                            inline=True
+                        )
+                    else:
+                        # Show detailed HOLD status
+                        conditions_needed = strategy_signal.get('conditions_needed', [])
+                        next_check = strategy_signal.get('next_check', 'Unknown')
+                        reason = strategy_signal.get('reason', 'Waiting for entry conditions')
+                        
+                        # Format conditions needed
+                        if conditions_needed:
+                            conditions_text = "\n".join([f"• {cond}" for cond in conditions_needed[:3]])
+                        else:
+                            conditions_text = "• Waiting for entry setup"
+                        
+                        embed.add_field(
+                            name="🎯 Quantitative Strategy",
+                            value=f"**Status:** No setup detected\n"
+                                  f"**Reason:** {reason[:100]}\n"
+                                  f"**Conditions Needed:**\n{conditions_text}\n"
+                                  f"**Next Check:** {next_check}",
+                            inline=True
+                        )
+                
+                # NEW: Multi-Timeframe Analysis
+                if mtf_analysis and mtf_analysis.get('available'):
+                    alignment = mtf_analysis.get('alignment', {})
+                    alignment_status = alignment.get('alignment', 'UNKNOWN')
+                    timeframes = mtf_analysis.get('timeframes', {})
+                    
+                    short = timeframes.get('short', {}).get('trend', 'N/A')
+                    medium = timeframes.get('medium', {}).get('trend', 'N/A')
+                    long = timeframes.get('long', {}).get('trend', 'N/A')
+                    
+                    embed.add_field(
+                        name="📈 Multi-Timeframe Analysis",
+                        value=f"**Alignment:** {alignment_status}\n"
+                              f"**Short (20d):** {short}\n"
+                              f"**Medium (50d):** {medium}\n"
+                              f"**Long (200d):** {long}",
+                        inline=True
+                    )
                 
                 # Reasoning
                 embed.add_field(
@@ -1753,9 +2485,581 @@ async def analyze_command(interaction: discord.Interaction, symbol: str):
             
     except Exception as e:
         logger.error(f"Error in analyze command: {e}")
-        await interaction.followup.send(
-            embed=create_error_embed(f"Analysis failed: {str(e)}")
+        error_embed = create_error_embed(f"Analysis failed: {str(e)}")
+        await interaction.followup.send(embed=error_embed)
+
+
+@bot.tree.command(name="monitor", description="Analyze current positions with detailed momentum and recommendations")
+async def monitor_command(interaction: discord.Interaction):
+    """Manually trigger position monitoring with detailed analysis."""
+    await interaction.response.defer()
+    
+    try:
+        from services import get_alpaca_service
+        
+        alpaca = get_alpaca_service()
+        positions = await alpaca.get_positions()
+        
+        if not positions:
+            await interaction.followup.send("📊 **Position Monitor**\n\nNo open positions to monitor.")
+            return
+        
+        # Build detailed analysis for each position
+        monitor_report = "📊 **Position Monitor Analysis**\n"
+        monitor_report += "─────────────────────────────\n\n"
+        
+        for pos in positions:
+            symbol = pos['symbol']
+            qty = pos['qty']
+            entry_price = pos['avg_entry_price']
+            current_price = pos['current_price']
+            unrealized_pl = pos['unrealized_pl']
+            unrealized_plpc = pos['unrealized_plpc']
+            
+            # Calculate momentum
+            price_change = current_price - entry_price
+            price_change_pct = (price_change / entry_price) * 100
+            
+            # Determine momentum direction
+            if abs(price_change_pct) < 1:
+                momentum_status = "Neutral"
+                momentum_emoji = "➡️"
+            elif price_change_pct > 0:
+                momentum_status = "Bullish"
+                momentum_emoji = "📈"
+            else:
+                momentum_status = "Bearish"
+                momentum_emoji = "📉"
+            
+            # Calculate targets
+            profit_target = entry_price * 1.5  # 50% profit target
+            stop_loss = entry_price * 0.7  # 30% stop loss
+            
+            # Determine recommendation
+            if unrealized_plpc >= 0.5:
+                recommendation = "TAKE PROFIT"
+                rec_emoji = "💰"
+                reason = "Target reached - secure gains"
+            elif unrealized_plpc <= -0.3:
+                recommendation = "EXIT"
+                rec_emoji = "⚠️"
+                reason = "Stop loss triggered - limit losses"
+            elif price_change_pct > 10:
+                recommendation = "HOLD"
+                rec_emoji = "✋"
+                reason = "Strong momentum - let it run"
+            elif price_change_pct < -10:
+                recommendation = "CONSIDER EXIT"
+                rec_emoji = "⚠️"
+                reason = "Weak momentum - review position"
+            else:
+                recommendation = "HOLD"
+                rec_emoji = "✋"
+                reason = "Within normal range"
+            
+            # Build position report
+            monitor_report += f"**{symbol}** ({qty} shares @ ${entry_price:.2f})\n"
+            monitor_report += f"Current: ${current_price:.2f} | P&L: ${unrealized_pl:+,.2f} ({unrealized_plpc*100:+.2f}%)\n"
+            monitor_report += f"{momentum_emoji} Momentum: {momentum_status} ({price_change_pct:+.2f}%)\n"
+            monitor_report += f"{rec_emoji} Recommendation: **{recommendation}**\n"
+            monitor_report += f"Reason: {reason}\n"
+            monitor_report += f"Stop Loss: ${stop_loss:.2f} | Target: ${profit_target:.2f}\n"
+            monitor_report += f"─────────────────────────────\n\n"
+        
+        # Add summary
+        total_pl = sum(p['unrealized_pl'] for p in positions)
+        monitor_report += f"**Summary:**\n"
+        monitor_report += f"Total Positions: {len(positions)}\n"
+        monitor_report += f"Total P&L: ${total_pl:+,.2f}\n"
+        
+        await interaction.followup.send(monitor_report)
+        
+    except Exception as e:
+        logger.error(f"Error in monitor command: {e}")
+        await interaction.followup.send(f"❌ Error monitoring positions: {str(e)}")
+
+
+@bot.tree.command(name="watchlist-create", description="📋 Create a new persistent watchlist in Alpaca")
+async def watchlist_create_command(
+    interaction: discord.Interaction,
+    name: str,
+    symbols: str
+):
+    """Create a new watchlist in Alpaca."""
+    await interaction.response.defer()
+    
+    try:
+        from services import get_alpaca_service
+        alpaca = get_alpaca_service()
+        
+        # Parse symbols
+        symbol_list = [s.strip().upper() for s in symbols.split(',')]
+        
+        # Create watchlist
+        result = await alpaca.create_watchlist(name, symbol_list)
+        
+        if result:
+            embed = create_success_embed(
+                f"📋 **Watchlist Created: {name}**\n\n"
+                f"**Symbols:** {', '.join(symbol_list)}\n"
+                f"**ID:** {result.get('id', 'N/A')}\n"
+                f"**Stored in:** Alpaca (persistent)"
+            )
+        else:
+            embed = create_error_embed("Failed to create watchlist")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error creating watchlist: {e}")
+        error_embed = create_error_embed(f"Error: {str(e)}")
+        await interaction.followup.send(embed=error_embed)
+
+
+@bot.tree.command(name="watchlist-list", description="📋 List all Alpaca watchlists")
+async def watchlist_list_command(interaction: discord.Interaction):
+    """List all watchlists from Alpaca."""
+    await interaction.response.defer()
+    
+    try:
+        from services import get_alpaca_service
+        alpaca = get_alpaca_service()
+        
+        watchlists = await alpaca.get_all_watchlists()
+        
+        if not watchlists:
+            embed = create_warning_embed("No watchlists found in Alpaca")
+            await interaction.followup.send(embed=embed)
+            return
+        
+        embed = discord.Embed(
+            title="📋 Alpaca Watchlists",
+            description=f"Found {len(watchlists)} watchlist(s)",
+            color=discord.Color.blue()
         )
+        
+        for wl in watchlists:
+            symbols = wl.get('symbols', [])
+            embed.add_field(
+                name=f"{wl['name']}",
+                value=f"**ID:** {wl['id']}\n**Symbols:** {', '.join(symbols[:10])}{'...' if len(symbols) > 10 else ''}",
+                inline=False
+            )
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error listing watchlists: {e}")
+        error_embed = create_error_embed(f"Error: {str(e)}")
+        await interaction.followup.send(embed=error_embed)
+
+
+@bot.tree.command(name="screen", description="🔍 Screen stocks with filters")
+async def screen_command(
+    interaction: discord.Interaction,
+    volume_min: int = 1000000,
+    price_min: float = 5.0,
+    price_max: float = 500.0,
+    change_min: float = None
+):
+    """Screen stocks using Alpaca Screener API."""
+    await interaction.response.defer()
+    
+    try:
+        from services import get_alpaca_service
+        alpaca = get_alpaca_service()
+        
+        # Build filters
+        filters = {
+            "volume_min": volume_min,
+            "price_min": price_min,
+            "price_max": price_max
+        }
+        
+        if change_min is not None:
+            filters["change_pct_min"] = change_min
+        
+        # Screen stocks
+        symbols = await alpaca.screen_stocks(filters)
+        
+        if not symbols:
+            embed = create_warning_embed("No stocks found matching criteria")
+            await interaction.followup.send(embed=embed)
+            return
+        
+        embed = discord.Embed(
+            title="🔍 Stock Screener Results",
+            description=f"Found {len(symbols)} stocks matching criteria",
+            color=discord.Color.green()
+        )
+        
+        embed.add_field(
+            name="Filters Applied",
+            value=f"**Volume:** ≥{volume_min:,}\n"
+                  f"**Price:** ${price_min} - ${price_max}\n"
+                  f"**Change:** {f'≥{change_min:+.1f}%' if change_min else 'Any'}",
+            inline=False
+        )
+        
+        embed.add_field(
+            name=f"Matching Symbols ({len(symbols)})",
+            value=', '.join(symbols[:20]) + ('...' if len(symbols) > 20 else ''),
+            inline=False
+        )
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error screening stocks: {e}")
+        error_embed = create_error_embed(f"Error: {str(e)}")
+        await interaction.followup.send(embed=error_embed)
+
+
+@bot.tree.command(name="crypto-price", description="🪙 Get cryptocurrency price")
+async def crypto_price_command(
+    interaction: discord.Interaction,
+    symbol: str
+):
+    """Get crypto price from Alpaca."""
+    await interaction.response.defer()
+    
+    try:
+        from services import get_alpaca_service
+        alpaca = get_alpaca_service()
+        
+        # Ensure symbol format (e.g., BTCUSD)
+        symbol = symbol.upper().replace('/', '')
+        if not symbol.endswith('USD'):
+            symbol = symbol + 'USD'
+        
+        # Get crypto snapshot
+        snapshot = await alpaca.get_crypto_snapshot(symbol)
+        
+        if not snapshot:
+            embed = create_error_embed(f"Could not get price for {symbol}")
+            await interaction.followup.send(embed=embed)
+            return
+        
+        embed = discord.Embed(
+            title=f"🪙 {symbol}",
+            description=f"**Price:** ${snapshot['price']:,.2f}",
+            color=discord.Color.gold()
+        )
+        
+        embed.add_field(
+            name="Type",
+            value="Cryptocurrency",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Source",
+            value="Alpaca Crypto API",
+            inline=True
+        )
+        
+        embed.set_footer(text=f"Updated: {snapshot.get('timestamp', 'N/A')}")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error getting crypto price: {e}")
+        error_embed = create_error_embed(f"Error: {str(e)}\nCrypto API may not be available on your plan")
+        await interaction.followup.send(embed=error_embed)
+
+
+@bot.tree.command(name="crypto-buy", description="🪙 Buy cryptocurrency")
+async def crypto_buy_command(
+    interaction: discord.Interaction,
+    symbol: str,
+    quantity: float
+):
+    """Buy cryptocurrency via Alpaca."""
+    await interaction.response.defer()
+    
+    try:
+        from services import get_alpaca_service
+        alpaca = get_alpaca_service()
+        
+        # Ensure symbol format
+        symbol = symbol.upper().replace('/', '')
+        if not symbol.endswith('USD'):
+            symbol = symbol + 'USD'
+        
+        # Place crypto order
+        order = await alpaca.place_crypto_order(symbol, quantity, "buy")
+        
+        if 'error' in order:
+            embed = create_error_embed(f"Failed to place order: {order['error']}")
+        else:
+            embed = create_success_embed(
+                f"🪙 **Crypto Buy Order Placed**\n\n"
+                f"**Symbol:** {symbol}\n"
+                f"**Quantity:** {quantity}\n"
+                f"**Side:** BUY\n"
+                f"**Status:** {order.get('status', 'Unknown')}\n"
+                f"**Order ID:** {order.get('id', 'N/A')}"
+            )
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error buying crypto: {e}")
+        error_embed = create_error_embed(f"Error: {str(e)}")
+        await interaction.followup.send(embed=error_embed)
+
+
+@bot.tree.command(name="stream-start", description="📡 Start real-time price streaming")
+async def stream_start_command(
+    interaction: discord.Interaction,
+    symbols: str
+):
+    """Start real-time streaming for symbols."""
+    await interaction.response.defer()
+    
+    try:
+        embed = create_success_embed(
+            f"📡 **Real-Time Streaming**\n\n"
+            f"**Symbols:** {symbols}\n"
+            f"**Status:** Feature available\n\n"
+            f"⚠️ **Note:** Streaming requires WebSocket setup.\n"
+            f"Contact admin to enable real-time streaming for your watchlist."
+        )
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error starting stream: {e}")
+        error_embed = create_error_embed(f"Error: {str(e)}")
+        await interaction.followup.send(embed=error_embed)
+
+
+@bot.tree.command(name="corporate-actions", description="📊 Check corporate actions (splits/dividends)")
+async def corporate_actions_command(
+    interaction: discord.Interaction,
+    symbol: str
+):
+    """Check corporate actions for a symbol."""
+    await interaction.response.defer()
+    
+    try:
+        from services import get_alpaca_service
+        alpaca = get_alpaca_service()
+        
+        # Get corporate actions
+        actions = await alpaca.get_corporate_actions(symbol.upper())
+        
+        if not actions:
+            embed = create_warning_embed(
+                f"No recent corporate actions found for {symbol.upper()}\n\n"
+                f"This includes: splits, dividends, mergers, spinoffs"
+            )
+            await interaction.followup.send(embed=embed)
+            return
+        
+        embed = discord.Embed(
+            title=f"📊 Corporate Actions: {symbol.upper()}",
+            description=f"Found {len(actions)} action(s)",
+            color=discord.Color.blue()
+        )
+        
+        for action in actions[:10]:  # Show up to 10
+            embed.add_field(
+                name=f"{action.get('type', 'Unknown').title()}",
+                value=f"**Date:** {action.get('date', 'N/A')}\n**Details:** {action.get('details', 'N/A')}",
+                inline=False
+            )
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error getting corporate actions: {e}")
+        error_embed = create_error_embed(f"Error: {str(e)}\nCorporate Actions API may not be available on your plan")
+        await interaction.followup.send(embed=error_embed)
+
+
+@bot.tree.command(name="strategy-list", description="📊 List all available trading strategies")
+async def strategy_list_command(interaction: discord.Interaction):
+    """List all available strategies."""
+    await interaction.response.defer()
+    
+    try:
+        from strategies.strategy_manager import StrategyManager
+        
+        manager = StrategyManager()
+        strategies = manager.list_strategies()
+        
+        embed = discord.Embed(
+            title="📊 Available Trading Strategies",
+            description=f"Total: {len(strategies)} strategies",
+            color=discord.Color.blue()
+        )
+        
+        for name, active in strategies.items():
+            status = "✅ ACTIVE" if active else "⚠️ INACTIVE"
+            info = manager.get_strategy_info(name)
+            
+            embed.add_field(
+                name=f"{info.get('name', name)} {status}",
+                value=f"Type: {info.get('type', 'equity')}\n{info.get('description', 'No description')[:100]}",
+                inline=False
+            )
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error listing strategies: {e}")
+        error_embed = create_error_embed(f"Error: {str(e)}")
+        await interaction.followup.send(embed=error_embed)
+
+
+@bot.tree.command(name="strategy-performance", description="📈 View strategy performance metrics")
+async def strategy_performance_command(
+    interaction: discord.Interaction,
+    strategy: str = None,
+    days: int = 30
+):
+    """View strategy performance."""
+    await interaction.response.defer()
+    
+    try:
+        from services.strategy_performance_tracker import get_strategy_tracker
+        
+        tracker = get_strategy_tracker()
+        
+        if strategy:
+            # Get specific strategy performance
+            perf = await tracker.get_strategy_performance(strategy, days)
+            
+            if perf.get('total_trades', 0) == 0:
+                embed = create_warning_embed(f"No trades recorded for {strategy} in last {days} days")
+                await interaction.followup.send(embed=embed)
+                return
+            
+            embed = discord.Embed(
+                title=f"📈 {perf['strategy']} Performance",
+                description=f"Last {days} days",
+                color=discord.Color.green() if perf.get('total_pnl', 0) > 0 else discord.Color.red()
+            )
+            
+            embed.add_field(
+                name="Trades",
+                value=f"Total: {perf['total_trades']}\nWins: {perf['wins']}\nLosses: {perf['losses']}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Win Rate",
+                value=f"{perf['win_rate']:.1f}%",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Total P&L",
+                value=f"${perf['total_pnl']:.2f}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Avg Win/Loss",
+                value=f"Win: ${perf['avg_win']:.2f}\nLoss: ${perf['avg_loss']:.2f}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Profit Factor",
+                value=f"{perf['profit_factor']:.2f}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Sharpe Ratio",
+                value=f"{perf['sharpe_ratio']:.2f}",
+                inline=True
+            )
+            
+        else:
+            # Get all strategies performance
+            all_perf = await tracker.get_all_strategies_performance(days)
+            
+            if not all_perf:
+                embed = create_warning_embed(f"No strategy trades recorded in last {days} days")
+                await interaction.followup.send(embed=embed)
+                return
+            
+            embed = discord.Embed(
+                title="📈 All Strategies Performance",
+                description=f"Last {days} days",
+                color=discord.Color.blue()
+            )
+            
+            for perf in all_perf[:5]:  # Top 5
+                embed.add_field(
+                    name=perf['strategy'],
+                    value=f"Trades: {perf['total_trades']} | Win Rate: {perf['win_rate']:.1f}% | P&L: ${perf['total_pnl']:.2f}",
+                    inline=False
+                )
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error getting strategy performance: {e}")
+        error_embed = create_error_embed(f"Error: {str(e)}")
+        await interaction.followup.send(embed=error_embed)
+
+
+@bot.tree.command(name="strategy-enable", description="✅ Enable a trading strategy")
+async def strategy_enable_command(
+    interaction: discord.Interaction,
+    strategy: str
+):
+    """Enable a strategy."""
+    await interaction.response.defer()
+    
+    try:
+        from strategies.strategy_manager import StrategyManager
+        
+        manager = StrategyManager()
+        success = manager.enable_strategy(strategy)
+        
+        if success:
+            embed = create_success_embed(f"✅ Enabled strategy: {strategy}")
+        else:
+            embed = create_error_embed(f"Failed to enable {strategy}. Check strategy name.")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error enabling strategy: {e}")
+        error_embed = create_error_embed(f"Error: {str(e)}")
+        await interaction.followup.send(embed=error_embed)
+
+
+@bot.tree.command(name="strategy-disable", description="⚠️ Disable a trading strategy")
+async def strategy_disable_command(
+    interaction: discord.Interaction,
+    strategy: str
+):
+    """Disable a strategy."""
+    await interaction.response.defer()
+    
+    try:
+        from strategies.strategy_manager import StrategyManager
+        
+        manager = StrategyManager()
+        success = manager.disable_strategy(strategy)
+        
+        if success:
+            embed = create_warning_embed(f"⚠️ Disabled strategy: {strategy}")
+        else:
+            embed = create_error_embed(f"Failed to disable {strategy}. Check strategy name.")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error disabling strategy: {e}")
+        error_embed = create_error_embed(f"Error: {str(e)}")
+        await interaction.followup.send(embed=error_embed)
 
 
 def get_bot() -> TradingBot:

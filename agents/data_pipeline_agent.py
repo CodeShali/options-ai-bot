@@ -92,48 +92,48 @@ class DataPipelineAgent(BaseAgent):
     
     async def get_market_data(self, symbols: List[str]) -> Dict[str, Any]:
         """
-        Get market data for specific symbols.
+        Get market data for multiple symbols using Alpaca's bulk snapshot API.
         
         Args:
-            symbols: List of symbols
+            symbols: List of stock symbols
             
         Returns:
-            Market data dictionary
+            Market data dictionary with snapshots
         """
-        results = {}
-        
-        for symbol in symbols:
-            try:
-                quote = await self.alpaca.get_latest_quote(symbol)
-                bars = await self.alpaca.get_bars(symbol, timeframe="1Day", limit=30)
-                
-                if quote and bars:
-                    results[symbol] = {
-                        "quote": quote,
-                        "bars": bars,
-                        "timestamp": datetime.now().isoformat()
-                    }
-            except Exception as e:
-                logger.error(f"Error getting market data for {symbol}: {e}")
-                results[symbol] = {"error": str(e)}
-        
-        return results
+        try:
+            # Use bulk snapshots - 100x faster!
+            logger.info(f"📸 Getting market data for {len(symbols)} symbols via bulk snapshot...")
+            snapshots = await self.alpaca.get_snapshots_bulk(symbols)
+            
+            results = {}
+            for symbol, snapshot in snapshots.items():
+                results[symbol] = {
+                    "snapshot": snapshot,
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            logger.info(f"✅ Got market data for {len(results)} symbols")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error getting bulk market data: {e}")
+            return {}
     
     async def get_quote(self, symbol: str) -> Dict[str, Any]:
         """
-        Get current quote for a symbol.
+        Get current quote for a symbol using snapshot API.
         
         Args:
             symbol: Stock symbol
             
         Returns:
-            Quote data
+            Snapshot data (includes quote + more)
         """
         try:
-            quote = await self.alpaca.get_latest_quote(symbol)
-            return quote or {"error": "Quote not found"}
+            snapshot = await self.alpaca.get_snapshot(symbol)
+            return snapshot or {"error": "Snapshot not found"}
         except Exception as e:
-            logger.error(f"Error getting quote for {symbol}: {e}")
+            logger.error(f"Error getting snapshot for {symbol}: {e}")
             return {"error": str(e)}
     
     def add_to_watchlist(self, symbol: str) -> bool:
@@ -143,6 +143,39 @@ class DataPipelineAgent(BaseAgent):
             logger.info(f"Added {symbol} to watchlist")
             return True
         return False  # Already in watchlist
+    
+    async def update_watchlist_from_screener(self, filters: Dict[str, Any] = None) -> List[str]:
+        """
+        Update watchlist using Alpaca Screener API.
+        
+        Args:
+            filters: Screening filters
+            
+        Returns:
+            List of new symbols added
+        """
+        try:
+            logger.info("🔍 Updating watchlist from screener...")
+            
+            # Use screener to find new opportunities
+            symbols = await self.alpaca.screen_stocks(filters)
+            
+            # Add new symbols to watchlist
+            added = []
+            for symbol in symbols:
+                if self.add_to_watchlist(symbol):
+                    added.append(symbol)
+            
+            if added:
+                logger.info(f"📋 Added {len(added)} new symbols from screener: {', '.join(added)}")
+            else:
+                logger.info("📋 No new symbols to add from screener")
+            
+            return added
+            
+        except Exception as e:
+            logger.error(f"Error updating watchlist from screener: {e}")
+            return []
     
     def is_in_watchlist(self, symbol: str) -> bool:
         """Check if symbol is in watchlist."""

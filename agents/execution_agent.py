@@ -3,7 +3,7 @@ Execution Agent - Executes trades through Alpaca API.
 """
 import asyncio
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 from loguru import logger
 
@@ -52,7 +52,7 @@ class ExecutionAgent(BaseAgent):
     
     async def execute_buy(self, trade: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute a buy order.
+        Execute a buy order with enhanced execution.
         
         Args:
             trade: Trade details with symbol, quantity, price, etc.
@@ -61,18 +61,43 @@ class ExecutionAgent(BaseAgent):
             Execution result
         """
         try:
+            from services.enhanced_execution_service import get_enhanced_execution_service
+            from services.execution_cost_analyzer import get_execution_cost_analyzer
+            from services.smart_exit_manager import get_smart_exit_manager
+            from services.retry_handler import get_retry_handler
+            
             symbol = trade['symbol']
             quantity = trade['quantity']
+            expected_price = trade.get('price', 0)
             
-            logger.info(f"Executing BUY order: {quantity} {symbol}")
+            logger.info(f"🚀 Enhanced BUY execution: {quantity} {symbol} @ ${expected_price:.2f}")
             
-            # Place market order
-            order = await self.alpaca.place_market_order(
+            # Use enhanced execution service
+            execution_service = get_enhanced_execution_service()
+            retry_handler = get_retry_handler()
+            
+            # Execute with retry logic
+            result = await retry_handler.retry_order_execution(
+                execution_service.execute_intelligent_order,
                 symbol=symbol,
-                qty=quantity,
+                quantity=quantity,
                 side="buy",
-                time_in_force="day"
+                expected_price=expected_price,
+                order_type="auto"
             )
+            
+            if not result["success"]:
+                return {
+                    "success": False,
+                    "error": result.get("error", "Unknown error"),
+                    "symbol": symbol,
+                    "attempts": result.get("attempts", 1)
+                }
+            
+            # Extract execution details
+            execution_result = result["result"]
+            fill_price = execution_result.get("fill_price", expected_price)
+            filled_qty = execution_result.get("filled_qty", quantity)
             
             # Generate trade ID
             trade_id = str(uuid.uuid4())
@@ -82,30 +107,60 @@ class ExecutionAgent(BaseAgent):
                 trade_id=trade_id,
                 symbol=symbol,
                 action="buy",
-                quantity=quantity,
-                price=trade.get('price', 0),
-                order_id=order['id'],
-                status="submitted",
-                notes=trade.get('notes', '')
+                quantity=filled_qty,
+                price=fill_price,
+                order_id=execution_result.get("order_id", ""),
+                status="filled",
+                notes=f"Enhanced execution - {execution_result.get('order_type_used', 'auto')}"
             )
             
-            logger.info(f"BUY order executed: {symbol} (Order ID: {order['id']})")
+            # Analyze execution cost
+            cost_analyzer = get_execution_cost_analyzer()
+            if expected_price > 0:
+                await cost_analyzer.analyze_execution_cost(
+                    symbol=symbol,
+                    side="buy",
+                    quantity=filled_qty,
+                    expected_price=expected_price,
+                    actual_price=fill_price,
+                    order_type=execution_result.get("order_type_used", "market"),
+                    spread=execution_result.get("spread_pct", 0) / 100 * expected_price
+                )
+            
+            # Setup smart exits
+            exit_manager = get_smart_exit_manager()
+            position_type = trade.get('position_type', 'stock')
+            await exit_manager.setup_smart_exits(
+                symbol=symbol,
+                entry_price=fill_price,
+                quantity=filled_qty,
+                position_type=position_type,
+                strategy="multi_target"
+            )
+            
+            logger.info(f"✅ Enhanced BUY completed: {symbol} - {filled_qty} @ ${fill_price:.2f}")
             
             return {
                 "success": True,
                 "trade_id": trade_id,
-                "order": order,
+                "order_id": execution_result.get("order_id"),
                 "symbol": symbol,
-                "quantity": quantity,
-                "action": "buy"
+                "quantity": filled_qty,
+                "fill_price": fill_price,
+                "action": "buy",
+                "execution_type": "enhanced",
+                "order_type_used": execution_result.get("order_type_used"),
+                "spread_pct": execution_result.get("spread_pct", 0),
+                "attempts": result.get("attempts", 1)
             }
             
         except Exception as e:
-            logger.error(f"Error executing buy order: {e}")
+            logger.error(f"Error in enhanced buy execution: {e}")
             return {
                 "success": False,
                 "error": str(e),
-                "symbol": trade.get('symbol', 'UNKNOWN')
+                "symbol": trade.get('symbol', 'UNKNOWN'),
+                "execution_type": "enhanced"
             }
     
     async def execute_sell(
@@ -115,11 +170,11 @@ class ExecutionAgent(BaseAgent):
         reason: str = "Manual sell"
     ) -> Dict[str, Any]:
         """
-        Execute a sell order.
+        Execute a sell order for a position.
         
         Args:
             symbol: Stock symbol
-            quantity: Quantity to sell (None = sell all)
+            quantity: Number of shares to sell (None = sell all)
             reason: Reason for selling
             
         Returns:
@@ -131,59 +186,77 @@ class ExecutionAgent(BaseAgent):
             if not position:
                 return {
                     "success": False,
-                    "error": f"No position found for {symbol}"
+                    "error": f"No position found for {symbol}",
+                    "symbol": symbol
                 }
             
-            # Determine quantity
-            if quantity is None:
-                quantity = int(position['qty'])
-            else:
-                quantity = min(quantity, int(position['qty']))
+            current_qty = int(float(position.get("qty", 0)))
+            if current_qty <= 0:
+                return {
+                    "success": False,
+                    "error": f"No shares to sell for {symbol}",
+                    "symbol": symbol
+                }
             
-            logger.info(f"Executing SELL order: {quantity} {symbol} (Reason: {reason})")
+            # Check for open orders that might be holding shares
+            try:
+                open_orders = await self.alpaca.get_orders(status="open", limit=50)
+                held_qty = 0
+                for order in open_orders:
+                    if order.get("symbol") == symbol and order.get("side") == "sell":
+                        held_qty += int(float(order.get("qty", 0)))
+                
+                available_qty = abs(current_qty) - held_qty
+                if available_qty <= 0:
+                    return {
+                        "success": False,
+                        "error": f"All {symbol} shares are held by open orders. Cancel existing sell orders first.",
+                        "symbol": symbol,
+                        "held_by_orders": held_qty
+                    }
+            except Exception as e:
+                logger.warning(f"Could not check open orders for {symbol}: {e}")
+                available_qty = abs(current_qty)
             
-            # Place market order
+            # Determine quantity to sell
+            sell_qty = quantity if quantity is not None else available_qty
+            sell_qty = min(sell_qty, available_qty)  # Don't oversell available
+            
+            if sell_qty <= 0:
+                return {
+                    "success": False,
+                    "error": f"No available shares to sell for {symbol} (all held by orders)",
+                    "symbol": symbol
+                }
+            
+            logger.info(f"Executing SELL order: {sell_qty} {symbol} (Available: {available_qty}, Reason: {reason})")
+            
+            # Place market sell order
             order = await self.alpaca.place_market_order(
                 symbol=symbol,
-                qty=quantity,
-                side="sell",
-                time_in_force="day"
+                qty=sell_qty,
+                side="sell"
             )
             
-            # Generate trade ID
-            trade_id = str(uuid.uuid4())
+            # Record the trade
+            await self.db.record_trade({
+                "symbol": symbol,
+                "action": "SELL",
+                "quantity": sell_qty,
+                "price": float(position.get("current_price", 0)),
+                "timestamp": datetime.now(),
+                "reason": reason,
+                "order_id": order.get("id")
+            })
             
-            # Get current price for recording
-            quote = await self.alpaca.get_latest_quote(symbol)
-            current_price = quote['bid_price'] if quote else position['current_price']
-            
-            # Record trade in database
-            await self.db.record_trade(
-                trade_id=trade_id,
-                symbol=symbol,
-                action="sell",
-                quantity=quantity,
-                price=current_price,
-                order_id=order['id'],
-                status="submitted",
-                notes=reason
-            )
-            
-            # If selling entire position, mark as closed
-            if quantity >= position['qty']:
-                await self.db.close_position(symbol)
-            
-            logger.info(f"SELL order executed: {symbol} (Order ID: {order['id']})")
+            logger.info(f"✅ Sell order placed: {sell_qty} {symbol} - Order ID: {order.get('id')}")
             
             return {
                 "success": True,
-                "trade_id": trade_id,
-                "order": order,
                 "symbol": symbol,
-                "quantity": quantity,
-                "action": "sell",
-                "reason": reason,
-                "profit_loss": position['unrealized_pl']
+                "quantity": sell_qty,
+                "order_id": order.get("id"),
+                "message": f"Sold {sell_qty} shares of {symbol}"
             }
             
         except Exception as e:
@@ -193,6 +266,75 @@ class ExecutionAgent(BaseAgent):
                 "error": str(e),
                 "symbol": symbol
             }
+    
+    async def set_stop_losses(self, symbols: List[str], pct: float) -> Dict[str, Any]:
+        """Place stop-loss orders as a percentage below current price for given symbols."""
+        results: List[str] = []
+        for symbol in symbols:
+            try:
+                position = await self.alpaca.get_position(symbol)
+                if not position:
+                    results.append(f"{symbol}: No position found")
+                    continue
+                current_price = float(position.get("current_price", 0))
+                qty = int(abs(float(position.get("qty", 0))))
+                stop_price = round(current_price * (1 - pct / 100), 2)
+                await self.alpaca.place_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="sell",
+                    order_type="stop",
+                    stop_price=stop_price,
+                    time_in_force="gtc",
+                )
+                results.append(f"✅ {symbol}: Stop-loss set at ${stop_price:.2f}")
+            except Exception as e:
+                results.append(f"❌ {symbol}: Error - {str(e)}")
+        return {"success": True, "results": results}
+
+    async def set_take_profits(self, symbols: List[str], pct: float) -> Dict[str, Any]:
+        """Place take-profit limit orders as a percentage above current price for given symbols."""
+        results: List[str] = []
+        for symbol in symbols:
+            try:
+                position = await self.alpaca.get_position(symbol)
+                if not position:
+                    results.append(f"{symbol}: No position found")
+                    continue
+                current_price = float(position.get("current_price", 0))
+                qty = int(abs(float(position.get("qty", 0))))
+                limit_price = round(current_price * (1 + pct / 100), 2)
+                await self.alpaca.place_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="sell",
+                    order_type="limit",
+                    limit_price=limit_price,
+                    time_in_force="gtc",
+                )
+                results.append(f"✅ {symbol}: Take-profit at ${limit_price:.2f}")
+            except Exception as e:
+                results.append(f"❌ {symbol}: Error - {str(e)}")
+        return {"success": True, "results": results}
+
+    async def cancel_open_orders_for_symbol(self, symbol: str, order_type: Optional[str] = None) -> Dict[str, Any]:
+        """Cancel open orders for a symbol, optionally filtered by type."""
+        try:
+            orders = await self.alpaca.get_orders(status="open", limit=200)
+            cancelled = 0
+            for o in orders:
+                if o.get("symbol") != symbol:
+                    continue
+                if order_type and (o.get("type") != order_type):
+                    continue
+                try:
+                    if await self.alpaca.cancel_order(o.get("id")):
+                        cancelled += 1
+                except Exception:
+                    continue
+            return {"success": True, "cancelled": cancelled}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     async def close_position(self, symbol: str, reason: str = "Position close") -> Dict[str, Any]:
         """

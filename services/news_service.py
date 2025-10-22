@@ -10,18 +10,19 @@ from config import settings
 
 
 class NewsService:
-    """Service for fetching news from NewsAPI."""
+    """Service for fetching news from NewsAPI with Alpaca fallback."""
     
     def __init__(self):
         """Initialize news service."""
         self.api_key = settings.news_api_key
         self.enabled = settings.news_api_enabled and bool(self.api_key)
         self.base_url = "https://newsapi.org/v2"
+        self.alpaca = None  # Will be set if needed
         
         if self.enabled:
-            logger.info("News service initialized with real NewsAPI")
+            logger.info("📰 News service initialized with NewsAPI")
         else:
-            logger.info("News service initialized in mock mode (no API key)")
+            logger.info("📰 News service will use Alpaca News API (no NewsAPI key)")
     
     async def get_news(self, symbol: str, days: int = 7, max_articles: int = 10) -> List[Dict[str, Any]]:
         """
@@ -35,9 +36,10 @@ class NewsService:
         Returns:
             List of news articles with title, description, url, publishedAt
         """
+        # Try Alpaca News API first if NewsAPI is not enabled
         if not self.enabled:
-            logger.debug(f"News API disabled, returning empty list for {symbol}")
-            return []
+            logger.debug(f"NewsAPI disabled, trying Alpaca News API for {symbol}")
+            return await self._get_news_from_alpaca(symbol, max_articles)
         
         try:
             end_date = datetime.now()
@@ -106,6 +108,43 @@ class NewsService:
         """
         articles = await self.get_news(symbol, days=7, max_articles=max_headlines)
         return [article["title"] for article in articles if article["title"]]
+    
+    async def _get_news_from_alpaca(self, symbol: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Fallback to Alpaca News API.
+        
+        Args:
+            symbol: Stock symbol
+            limit: Number of articles
+            
+        Returns:
+            List of news articles
+        """
+        try:
+            # Lazy load alpaca service to avoid circular import
+            if self.alpaca is None:
+                from services import get_alpaca_service
+                self.alpaca = get_alpaca_service()
+            
+            alpaca_news = await self.alpaca.get_news(symbol, limit=limit)
+            
+            # Convert to our format
+            formatted = []
+            for item in alpaca_news:
+                formatted.append({
+                    "title": item.get("headline", ""),
+                    "description": item.get("summary", ""),
+                    "url": item.get("url", ""),
+                    "publishedAt": str(item.get("created_at", "")),
+                    "source": item.get("source", "Alpaca")
+                })
+            
+            logger.info(f"📰 Got {len(formatted)} news items from Alpaca for {symbol}")
+            return formatted
+            
+        except Exception as e:
+            logger.error(f"Error getting news from Alpaca: {e}")
+            return []
 
 
 # Singleton instance

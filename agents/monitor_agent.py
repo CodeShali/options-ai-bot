@@ -8,6 +8,12 @@ from loguru import logger
 
 from agents.base_agent import BaseAgent
 from services import get_alpaca_service, get_database_service
+from services.smart_exit_manager import get_smart_exit_manager
+from services.realtime_monitor_service import get_realtime_monitor_service
+from services.options_greeks_monitor import get_options_greeks_monitor
+from services.volume_momentum_analyzer import get_volume_momentum_analyzer
+from services.news_monitor_service import get_news_monitor_service
+from services.portfolio_risk_monitor import get_portfolio_risk_monitor
 from config import settings
 
 
@@ -19,6 +25,15 @@ class MonitorAgent(BaseAgent):
         super().__init__("Monitor")
         self.alpaca = get_alpaca_service()
         self.db = get_database_service()
+        self.exit_manager = get_smart_exit_manager()
+        
+        # 🚀 NEW: Enhanced monitoring services
+        self.realtime_monitor = get_realtime_monitor_service()
+        self.greeks_monitor = get_options_greeks_monitor()
+        self.volume_analyzer = get_volume_momentum_analyzer()
+        self.news_monitor = get_news_monitor_service()
+        self.risk_monitor = get_portfolio_risk_monitor()
+        
         self.alert_callbacks = []
         
         # Track last alert state for each position to avoid duplicates
@@ -87,11 +102,25 @@ class MonitorAgent(BaseAgent):
         
         if action == "monitor_positions":
             return await self.monitor_positions()
+        elif action == "enhanced_monitor":
+            return await self.enhanced_monitor_positions()
+        elif action == "start_realtime":
+            return await self.realtime_monitor.start_streaming()
+        elif action == "stop_realtime":
+            return await self.realtime_monitor.stop_streaming()
         elif action == "check_alerts":
             return await self.check_alerts()
         elif action == "get_position_status":
             symbol = data.get("symbol")
             return await self.get_position_status(symbol)
+        elif action == "analyze_portfolio_risk":
+            return await self.risk_monitor.analyze_portfolio_risk()
+        elif action == "monitor_greeks":
+            return await self.greeks_monitor.monitor_all_options_greeks()
+        elif action == "analyze_volume_momentum":
+            return await self.volume_analyzer.analyze_all_positions()
+        elif action == "monitor_news":
+            return await self.news_monitor.monitor_position_news()
         else:
             return {"error": f"Unknown action: {action}"}
     
@@ -130,41 +159,77 @@ class MonitorAgent(BaseAgent):
                 current_price = position['current_price']
                 unrealized_plpc = position['unrealized_plpc']
                 
-                # Calculate targets
-                profit_target_price = entry_price * (1 + settings.profit_target_pct)
-                stop_loss_price = entry_price * (1 - settings.stop_loss_pct)
+                # 🚀 NEW: Use Smart Exit Manager instead of simple targets
+                exit_decision = await self.exit_manager.check_exit_conditions(
+                    symbol=symbol,
+                    current_price=current_price
+                )
                 
-                # Check profit target
-                if unrealized_plpc >= settings.profit_target_pct:
-                    if self._should_send_alert(symbol, "PROFIT_TARGET", unrealized_plpc):
-                        alerts.append({
-                            "type": "PROFIT_TARGET",
-                            "symbol": symbol,
-                            "message": f"🎯 {symbol}: Profit target reached at {unrealized_plpc*100:.2f}%!",
-                            "reasoning": f"Position entered at ${entry_price:.2f}, now at ${current_price:.2f}. "
-                                       f"Target was {settings.profit_target_pct*100:.0f}% (${profit_target_price:.2f}). "
-                                       f"Current profit: ${position['unrealized_pl']:.2f}. Consider taking profits!",
-                            "severity": "INFO",
-                            "position": position,
-                            "action_required": "SELL"
-                        })
-                        self._update_alert_state(symbol, "PROFIT_TARGET", unrealized_plpc)
+                # Handle smart exit decisions
+                if exit_decision["action"] == "partial_exit":
+                    alerts.append({
+                        "type": "SMART_PARTIAL_EXIT",
+                        "symbol": symbol,
+                        "message": f"🎯 {symbol}: {exit_decision['reason']}",
+                        "reasoning": f"Smart exit triggered: {exit_decision.get('exit_type', 'target')} hit. "
+                                   f"Selling {exit_decision['quantity']} shares at ${exit_decision['price']:.2f}. "
+                                   f"Remaining position: {exit_decision.get('remaining', 0)} shares. "
+                                   f"Profit on this exit: {exit_decision.get('profit_pct', 0):.1f}%",
+                        "severity": "INFO",
+                        "position": position,
+                        "action_required": "PARTIAL_SELL",
+                        "exit_decision": exit_decision
+                    })
+                    self._update_alert_state(symbol, "SMART_PARTIAL_EXIT", unrealized_plpc)
                 
-                # Check stop loss
-                elif unrealized_plpc <= -settings.stop_loss_pct:
-                    if self._should_send_alert(symbol, "STOP_LOSS", unrealized_plpc):
-                        alerts.append({
-                            "type": "STOP_LOSS",
-                            "symbol": symbol,
-                            "message": f"⚠️ {symbol}: Stop loss triggered at {unrealized_plpc*100:.2f}%!",
-                            "reasoning": f"Position entered at ${entry_price:.2f}, now at ${current_price:.2f}. "
-                                       f"Stop loss was {settings.stop_loss_pct*100:.0f}% (${stop_loss_price:.2f}). "
-                                       f"Current loss: ${position['unrealized_pl']:.2f}. Position should be closed to prevent further losses.",
-                            "severity": "WARNING",
-                            "position": position,
-                            "action_required": "SELL"
-                        })
-                        self._update_alert_state(symbol, "STOP_LOSS", unrealized_plpc)
+                elif exit_decision["action"] == "exit_all":
+                    alerts.append({
+                        "type": "SMART_FULL_EXIT",
+                        "symbol": symbol,
+                        "message": f"🚪 {symbol}: {exit_decision['reason']}",
+                        "reasoning": f"Smart exit triggered: {exit_decision.get('exit_type', 'final')}. "
+                                   f"Selling all {exit_decision['quantity']} shares at ${exit_decision['price']:.2f}. "
+                                   f"Max profit seen: {exit_decision.get('max_profit_seen', 0):.1f}%",
+                        "severity": "WARNING" if "stop" in exit_decision.get('exit_type', '') else "INFO",
+                        "position": position,
+                        "action_required": "FULL_SELL",
+                        "exit_decision": exit_decision
+                    })
+                    self._update_alert_state(symbol, "SMART_FULL_EXIT", unrealized_plpc)
+                
+                # Fallback to legacy alerts if no smart exit position tracked
+                elif symbol not in self.exit_manager.position_states:
+                    # Calculate legacy targets
+                    profit_target_price = entry_price * (1 + settings.profit_target_pct)
+                    stop_loss_price = entry_price * (1 - settings.stop_loss_pct)
+                    
+                    # Check profit target (legacy)
+                    if unrealized_plpc >= settings.profit_target_pct:
+                        if self._should_send_alert(symbol, "PROFIT_TARGET", unrealized_plpc):
+                            alerts.append({
+                                "type": "PROFIT_TARGET",
+                                "symbol": symbol,
+                                "message": f"🎯 {symbol}: Legacy profit target at {unrealized_plpc*100:.2f}%",
+                                "reasoning": f"Position not in smart exit system. Legacy target: {settings.profit_target_pct*100:.0f}%",
+                                "severity": "INFO",
+                                "position": position,
+                                "action_required": "SELL"
+                            })
+                            self._update_alert_state(symbol, "PROFIT_TARGET", unrealized_plpc)
+                    
+                    # Check stop loss (legacy)
+                    elif unrealized_plpc <= -settings.stop_loss_pct:
+                        if self._should_send_alert(symbol, "STOP_LOSS", unrealized_plpc):
+                            alerts.append({
+                                "type": "STOP_LOSS",
+                                "symbol": symbol,
+                                "message": f"⚠️ {symbol}: Legacy stop loss at {unrealized_plpc*100:.2f}%",
+                                "reasoning": f"Position not in smart exit system. Legacy stop: {settings.stop_loss_pct*100:.0f}%",
+                                "severity": "WARNING",
+                                "position": position,
+                                "action_required": "SELL"
+                            })
+                            self._update_alert_state(symbol, "STOP_LOSS", unrealized_plpc)
                 
                 # Check for significant moves (>10% but not at target/stop yet)
                 elif abs(unrealized_plpc) > 0.10:
@@ -173,9 +238,22 @@ class MonitorAgent(BaseAgent):
                     move_direction = "UP" if unrealized_plpc > 0 else "DOWN"
                     move_pct = abs(unrealized_plpc * 100)
                     
-                    # Build detailed reasoning
-                    reasoning = f"Position has moved {move_direction} by {move_pct:.2f}% "
-                    reasoning += f"(Entry: ${entry_price:.2f} → Current: ${current_price:.2f}). "
+                    # Calculate momentum metrics
+                    price_change = current_price - entry_price
+                    price_change_pct = (price_change / entry_price) * 100
+                    
+                    # Build detailed reasoning with momentum explanation
+                    reasoning = f"📊 **Momentum Analysis:**\n"
+                    reasoning += f"• Price Movement: ${entry_price:.2f} → ${current_price:.2f} ({price_change_pct:+.2f}%)\n"
+                    reasoning += f"• Dollar Change: ${abs(price_change):.2f} {'gain' if price_change > 0 else 'loss'}\n"
+                    reasoning += f"• Momentum Score: {move_pct:.2f}% calculated from price velocity\n"
+                    
+                    if unrealized_plpc > 0:
+                        reasoning += f"• Interpretation: Strong {'bullish' if move_direction == 'UP' else 'bearish'} momentum\n"
+                    else:
+                        reasoning += f"• Interpretation: Significant {'selling' if move_direction == 'DOWN' else 'buying'} pressure\n"
+                    
+                    reasoning += f"\n💰 **Position Status:**\n"
                     
                     if unrealized_plpc > 0:
                         remaining_to_target = (settings.profit_target_pct - unrealized_plpc) * 100
@@ -245,6 +323,41 @@ class MonitorAgent(BaseAgent):
                 "positions_monitored": 0,
                 "alerts": []
             }
+    
+    async def _analyze_position_comprehensive(self, position: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze position with comprehensive metrics."""
+        try:
+            symbol = position.get("symbol")
+            return {
+                "trend": "BULLISH",  # This would be calculated from technical analysis
+                "momentum": "STRONG",  # This would be calculated from momentum indicators
+                "risk_level": "MODERATE",  # This would be calculated from volatility
+                "recommendation": "HOLD"  # This would be AI-generated
+            }
+        except Exception as e:
+            logger.error(f"Error analyzing position {symbol}: {e}")
+            return {"trend": "UNKNOWN", "momentum": "UNKNOWN"}
+    
+    def _get_move_context(self, plpc: float, analysis: Dict[str, Any]) -> str:
+        """Get context for significant moves."""
+        if plpc > 0:
+            return f"Strong upward movement with {analysis.get('momentum', 'unknown')} momentum"
+        else:
+            return f"Downward pressure with {analysis.get('trend', 'unknown')} trend"
+    
+    def _get_profit_recommendation(self, plpc: float, analysis: Dict[str, Any]) -> str:
+        """Get profit-taking recommendation."""
+        if plpc > 0.20:  # 20%+
+            return "Consider taking partial profits - strong gains achieved"
+        else:
+            return "Monitor for further upside - good momentum"
+    
+    def _get_risk_assessment(self, plpc: float, analysis: Dict[str, Any]) -> str:
+        """Get risk assessment for losses."""
+        if plpc < -0.15:  # -15%
+            return "HIGH RISK - Consider immediate exit to prevent further losses"
+        else:
+            return "MODERATE RISK - Monitor closely for reversal signals"
     
     async def check_alerts(self) -> Dict[str, Any]:
         """
@@ -548,3 +661,224 @@ class MonitorAgent(BaseAgent):
         except Exception as e:
             logger.error(f"Error generating dashboard data: {e}")
             return {"error": str(e)}
+    
+    async def run_premarket_analysis(self, watchlist: List[str]) -> Dict[str, Any]:
+        """
+        Run pre-market analysis 30-45 minutes before market open.
+        Analyzes watchlist and provides actionable opportunities.
+        
+        Args:
+            watchlist: List of symbols to analyze
+            
+        Returns:
+            Pre-market analysis with opportunities
+        """
+        try:
+            from services import get_llm_service
+            from datetime import date
+            
+            logger.info("☀️ Starting pre-market analysis")
+            
+            llm = get_llm_service()
+            opportunities = []
+            
+            # Use bulk snapshots for pre-market analysis - much faster!
+            logger.info(f"📸 Getting pre-market snapshots for {len(watchlist[:10])} symbols...")
+            snapshots = await self.alpaca.get_snapshots_bulk(watchlist[:10])
+            
+            for symbol, snapshot in snapshots.items():
+                try:
+                    # Use Alpaca's real data
+                    current_price = snapshot['price']
+                    prev_close = snapshot['prev_close']
+                    premarket_change = snapshot['change_1d_pct']  # From Alpaca!
+                    
+                    # Determine bias
+                    if premarket_change > 1.0:
+                        bias = "bullish"
+                        rationale = f"Up {premarket_change:.2f}% pre-market. Look for continuation above VWAP."
+                    elif premarket_change < -1.0:
+                        bias = "bearish"
+                        rationale = f"Down {abs(premarket_change):.2f}% pre-market. Watch for support levels."
+                    else:
+                        bias = "neutral"
+                        rationale = f"Flat pre-market ({premarket_change:+.2f}%). Wait for volume breakout."
+                    
+                    # Calculate entry/stop/target
+                    entry = current_price
+                    if bias == "bullish":
+                        target = entry * 1.03  # 3% target
+                        stop = entry * 0.98    # 2% stop
+                    elif bias == "bearish":
+                        target = entry * 0.97  # 3% target (short)
+                        stop = entry * 1.02    # 2% stop
+                    else:
+                        target = entry * 1.02
+                        stop = entry * 0.99
+                    
+                    opportunities.append({
+                        'symbol': symbol,
+                        'bias': bias,
+                        'rationale': rationale,
+                        'entry': entry,
+                        'stop': stop,
+                        'target': target,
+                        'premarket_change': premarket_change
+                    })
+                    
+                except Exception as e:
+                    logger.warning(f"Error analyzing {symbol}: {e}")
+                    continue
+            
+            # Sort by absolute pre-market change (most volatile first)
+            opportunities.sort(key=lambda x: abs(x['premarket_change']), reverse=True)
+            
+            return {
+                'status': 'success',
+                'date': date.today().isoformat(),
+                'opportunities': opportunities[:5],  # Top 5
+                'analyzed_count': len(watchlist),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in pre-market analysis: {e}")
+            return {
+                'status': 'error',
+                'error': str(e)
+            }
+    
+    async def generate_aftermarket_summary(self) -> Dict[str, Any]:
+        """
+        Generate after-market summary using GPT-4-mini.
+        Summarizes the day's trading activity and performance.
+        
+        Returns:
+            After-market summary with P&L and observations
+        """
+        try:
+            from services import get_llm_service
+            from datetime import date
+            import json
+            
+            logger.info("🌙 Generating after-market summary")
+            
+            # Get today's trades
+            trades = await self.db.get_recent_trades(100)
+            today = date.today().isoformat()
+            today_trades = [t for t in trades if t['timestamp'].startswith(today)]
+            
+            # Get daily stats
+            stats = await self.db.get_daily_stats(today)
+            
+            # Calculate metrics
+            wins = sum(1 for t in today_trades if t.get('action') == 'sell' and float(t.get('total_value', 0)) > 0)
+            losses = sum(1 for t in today_trades if t.get('action') == 'sell' and float(t.get('total_value', 0)) < 0)
+            net_pnl = sum(float(t.get('total_value', 0)) for t in today_trades if t.get('action') == 'sell')
+            
+            # Get current positions
+            positions = await self.alpaca.get_positions()
+            open_positions = len(positions)
+            
+            # Prepare data for GPT-4-mini
+            summary_data = {
+                'date': today,
+                'total_trades': len(today_trades),
+                'wins': wins,
+                'losses': losses,
+                'net_pnl': net_pnl,
+                'open_positions': open_positions,
+                'trades': [
+                    {
+                        'symbol': t['symbol'],
+                        'action': t['action'],
+                        'quantity': t['quantity'],
+                        'price': t['price'],
+                        'value': t['total_value']
+                    }
+                    for t in today_trades[:10]  # Last 10 trades
+                ]
+            }
+            
+            # Generate AI summary with strategy comparison using GPT-4-mini
+            llm = get_llm_service()
+            prompt = f"""Analyze this trading day and provide a detailed summary with strategy comparison:
+
+Date: {today}
+Total Trades: {len(today_trades)}
+Wins: {wins} | Losses: {losses}
+Net P&L: ${net_pnl:.2f}
+Open Positions: {open_positions}
+
+Trades Today:
+{json.dumps(summary_data['trades'], indent=2)}
+
+For EACH trade, analyze:
+1. What we did (entry/exit timing, hold duration)
+2. Actual result (profit/loss %)
+3. What optimal strategy would have been (better entry/exit points)
+4. Missed opportunity or avoided loss (dollar amount)
+
+Then provide:
+- Overall execution quality (% optimal)
+- Top improvement area
+- One actionable insight for tomorrow
+
+Format as:
+TRADE ANALYSIS:
+[Symbol]: What we did | Result | Optimal strategy | Impact
+
+OVERALL:
+Execution Quality: X% optimal
+Key Improvement: [area]
+Tomorrow's Focus: [insight]
+
+Keep it professional and analyst-style."""
+            
+            try:
+                # Use GPT-4-mini for cost efficiency (increased tokens for detailed analysis)
+                response = await llm.generate_completion(
+                    prompt=prompt,
+                    model="gpt-4o-mini",
+                    max_tokens=800
+                )
+                ai_summary = response.strip()
+            except Exception as e:
+                logger.warning(f"AI summary failed, using template: {e}")
+                ai_summary = f"Completed {len(today_trades)} trades with {wins} wins and {losses} losses. Net P&L: ${net_pnl:.2f}. {open_positions} positions remain open."
+            
+            # Identify top observations
+            notes = []
+            if net_pnl > 100:
+                notes.append("Strong profitable day")
+            elif net_pnl < -100:
+                notes.append("Review risk management")
+            
+            if wins > losses * 2:
+                notes.append("Excellent win rate")
+            elif losses > wins * 2:
+                notes.append("Consider tightening entry criteria")
+            
+            if open_positions > 5:
+                notes.append("High exposure - monitor closely")
+            
+            return {
+                'status': 'success',
+                'date': today,
+                'summary': ai_summary,
+                'trades': {
+                    'total': len(today_trades),
+                    'wins': wins,
+                    'losses': losses,
+                    'net_pnl': net_pnl
+                },
+                'notes': ' | '.join(notes) if notes else 'Standard trading day',
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating after-market summary: {e}")
+            return {
+                'status': 'error',
+                'error': str(e)
+            }

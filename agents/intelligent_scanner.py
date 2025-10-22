@@ -6,12 +6,22 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from loguru import logger
 
+from agents.base_agent import BaseAgent
 from services import (
     get_alpaca_service,
     get_sentiment_service,
     get_claude_service,
     get_news_service
 )
+
+# Import quantitative strategies
+try:
+    from strategies.strategy_manager import StrategyManager
+    from utils.multi_timeframe import MultiTimeframeAnalyzer
+    STRATEGIES_AVAILABLE = True
+except ImportError:
+    STRATEGIES_AVAILABLE = False
+    logger.warning("Quantitative strategies not available for scanner")
 
 
 class IntelligentScanner:
@@ -21,7 +31,8 @@ class IntelligentScanner:
     2. Analyzes with technical indicators
     3. Checks volume and Greeks
     4. Incorporates news sentiment
-    5. Generates comprehensive score and recommendation
+    5. Generates comprehensive score and analysis
+    6. Uses quantitative strategies for signal generation
     """
     
     def __init__(self):
@@ -31,6 +42,15 @@ class IntelligentScanner:
         self.claude = get_claude_service()
         self.news = get_news_service()
         
+        # Initialize quantitative strategies
+        if STRATEGIES_AVAILABLE:
+            self.strategy_manager = StrategyManager()
+            self.mtf_analyzer = MultiTimeframeAnalyzer()
+            logger.info("✅ Scanner: Quantitative strategies enabled")
+        else:
+            self.strategy_manager = None
+            self.mtf_analyzer = None
+        
     async def scan_with_full_analysis(self, watchlist: List[str]) -> Dict[str, Any]:
         """
         Perform comprehensive scan with full analysis.
@@ -39,7 +59,7 @@ class IntelligentScanner:
             watchlist: List of symbols to scan
             
         Returns:
-            Complete scan results with recommendations
+            Complete scan results with analysis
         """
         logger.info(f"🔍 Starting intelligent scan of {len(watchlist)} symbols...")
         
@@ -55,39 +75,39 @@ class IntelligentScanner:
             if analysis:
                 analyzed_opportunities.append(analysis)
         
-        # Step 3: Get AI recommendations for top opportunities
+        # Step 3: Get AI analysis for top opportunities
         top_opportunities = sorted(
             analyzed_opportunities,
             key=lambda x: x['momentum_score'],
             reverse=True
         )[:5]  # Top 5
         
-        ai_recommendations = []
+        ai_analysis = []
         for opp in top_opportunities:
-            recommendation = await self._get_ai_recommendation(opp)
-            if recommendation:
-                ai_recommendations.append(recommendation)
+            analysis = await self._get_ai_analysis(opp)
+            if analysis:
+                ai_analysis.append(analysis)
         
         # Step 4: Generate summary report
         summary = await self._generate_scan_summary(
             watchlist,
             momentum_results,
             analyzed_opportunities,
-            ai_recommendations
+            ai_analysis
         )
         
         scan_duration = (datetime.now() - scan_start).total_seconds()
         
-        logger.info(f"✅ Scan complete in {scan_duration:.1f}s: {len(ai_recommendations)} actionable opportunities")
+        logger.info(f"✅ Scan complete in {scan_duration:.1f}s: {len(ai_analysis)} actionable opportunities")
         
         return {
             "summary": summary,
-            "opportunities": ai_recommendations,
+            "opportunities": ai_analysis,
             "all_movers": analyzed_opportunities,
             "scan_stats": {
                 "symbols_scanned": len(watchlist),
                 "movers_detected": len(momentum_results['movers']),
-                "opportunities_found": len(ai_recommendations),
+                "opportunities_found": len(ai_analysis),
                 "duration_seconds": scan_duration,
                 "timestamp": datetime.now().isoformat()
             }
@@ -106,34 +126,37 @@ class IntelligentScanner:
         
         movers = []
         
-        for symbol in watchlist:
+        # Use Alpaca's bulk snapshot API - 10x faster!
+        logger.info(f"📸 Getting snapshots for {len(watchlist)} symbols in ONE API call...")
+        snapshots = await self.alpaca.get_snapshots_bulk(watchlist)
+        
+        if not snapshots:
+            logger.warning("No snapshots received from Alpaca")
+            return {"movers": [], "timestamp": datetime.now().isoformat()}
+        
+        logger.info(f"✅ Got {len(snapshots)} snapshots from Alpaca")
+        
+        for symbol, snapshot in snapshots.items():
             try:
-                # Get intraday bars (5-minute candles)
+                current_price = snapshot['price']
+                prev_close = snapshot['prev_close']
+                change_1d = snapshot['change_1d_pct']
+                
+                # Get 5-min bars only if needed for detailed momentum
                 bars_5min = await self.alpaca.get_bars(
                     symbol,
                     timeframe="5Min",
-                    limit=20  # Last 100 minutes
-                )
-                
-                # Get daily bars for context
-                bars_daily = await self.alpaca.get_bars(
-                    symbol,
-                    timeframe="1Day",
-                    limit=30
+                    limit=20
                 )
                 
                 if not bars_5min or len(bars_5min) < 10:
                     continue
                 
-                # Get current quote
-                quote = await self.alpaca.get_latest_quote(symbol)
-                if not quote:
-                    continue
-                
-                current_price = quote['price']
-                
-                # Calculate momentum indicators
-                momentum = self._calculate_momentum(bars_5min, bars_daily, current_price)
+                # Calculate momentum using Alpaca's data
+                momentum = self._calculate_momentum_from_snapshot(
+                    snapshot, 
+                    bars_5min
+                )
                 
                 # Check if this is a mover
                 if self._is_significant_mover(momentum):
@@ -141,9 +164,8 @@ class IntelligentScanner:
                         "symbol": symbol,
                         "current_price": current_price,
                         "momentum": momentum,
-                        "bars_5min": bars_5min[-10:],  # Last 10 candles
-                        "bars_daily": bars_daily,
-                        "quote": quote
+                        "bars_5min": bars_5min[-10:],
+                        "snapshot": snapshot  # Include full snapshot data
                     })
                     logger.info(f"  🚀 {symbol}: {momentum['direction']} {momentum['move_pct']:.2f}% in {momentum['timeframe']}")
                 
@@ -156,32 +178,34 @@ class IntelligentScanner:
             "timestamp": datetime.now().isoformat()
         }
     
-    def _calculate_momentum(
+    def _calculate_momentum_from_snapshot(
         self,
-        bars_5min: List[Dict],
-        bars_daily: List[Dict],
-        current_price: float
+        snapshot: Dict[str, Any],
+        bars_5min: List[Dict]
     ) -> Dict[str, Any]:
-        """Calculate comprehensive momentum indicators."""
+        """Calculate momentum using Alpaca's snapshot data (no manual calculations!)."""
         
-        # Recent 5-min candles
+        current_price = snapshot['price']
+        prev_close = snapshot['prev_close']
+        daily_volume = snapshot['daily_volume']
+        
+        # Use Alpaca's pre-calculated 1-day change
+        change_1d = snapshot['change_1d_pct']
+        
+        # Recent 5-min candles for intraday momentum
         recent_closes = [bar['close'] for bar in bars_5min[-10:]]
         recent_volumes = [bar['volume'] for bar in bars_5min[-10:]]
         recent_highs = [bar['high'] for bar in bars_5min[-10:]]
         recent_lows = [bar['low'] for bar in bars_5min[-10:]]
         
-        # Daily data
-        daily_closes = [bar['close'] for bar in bars_daily]
-        daily_volumes = [bar['volume'] for bar in bars_daily]
-        
-        # 1. Price momentum (last 15 minutes vs 50 minutes ago)
+        # 1. Intraday momentum (last 15 minutes)
         price_15min_ago = recent_closes[0] if len(recent_closes) >= 3 else recent_closes[0]
         move_15min = ((current_price - price_15min_ago) / price_15min_ago) * 100
         
-        # 2. Volume analysis
+        # 2. Volume analysis (5-min)
         avg_volume_5min = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 1
         current_volume_5min = recent_volumes[-1] if recent_volumes else 0
-        volume_ratio = current_volume_5min / avg_volume_5min if avg_volume_5min > 0 else 0
+        volume_ratio_5min = current_volume_5min / avg_volume_5min if avg_volume_5min > 0 else 0
         
         # 3. Volatility (ATR-like)
         ranges = [high - low for high, low in zip(recent_highs, recent_lows)]
@@ -190,31 +214,36 @@ class IntelligentScanner:
         
         # 4. Trend strength
         if len(recent_closes) >= 5:
-            # Simple trend: are we making higher highs?
             trend_up = all(recent_closes[i] >= recent_closes[i-1] for i in range(-4, 0))
             trend_down = all(recent_closes[i] <= recent_closes[i-1] for i in range(-4, 0))
             trend = "STRONG_UP" if trend_up else "STRONG_DOWN" if trend_down else "CHOPPY"
         else:
             trend = "UNKNOWN"
         
-        # 5. Daily context
-        sma_20 = sum(daily_closes[-20:]) / 20 if len(daily_closes) >= 20 else current_price
-        distance_from_sma = ((current_price - sma_20) / sma_20) * 100
+        # 5. Daily context from snapshot
+        daily_high = snapshot['daily_high']
+        daily_low = snapshot['daily_low']
+        daily_open = snapshot['daily_open']
         
-        avg_daily_volume = sum(daily_volumes[-20:]) / 20 if len(daily_volumes) >= 20 else 1
-        daily_volume_ratio = daily_volumes[-1] / avg_daily_volume if avg_daily_volume > 0 else 0
+        # Distance from daily high/low
+        distance_from_high = ((current_price - daily_high) / daily_high) * 100 if daily_high > 0 else 0
+        distance_from_low = ((current_price - daily_low) / daily_low) * 100 if daily_low > 0 else 0
         
         return {
             "move_pct": move_15min,
+            "change_1d_pct": change_1d,  # From Alpaca!
             "direction": "UP" if move_15min > 0 else "DOWN",
             "timeframe": "15min",
-            "volume_ratio_5min": volume_ratio,
-            "volume_ratio_daily": daily_volume_ratio,
+            "volume_ratio_5min": volume_ratio_5min,
             "volatility_pct": volatility_pct,
             "trend": trend,
-            "distance_from_sma20": distance_from_sma,
-            "sma_20": sma_20,
-            "strength": abs(move_15min) * volume_ratio  # Momentum strength score
+            "distance_from_high": distance_from_high,
+            "distance_from_low": distance_from_low,
+            "daily_high": daily_high,
+            "daily_low": daily_low,
+            "daily_open": daily_open,
+            "prev_close": prev_close,
+            "strength": abs(move_15min) * volume_ratio_5min  # Momentum strength score
         }
     
     def _is_significant_mover(self, momentum: Dict[str, Any]) -> bool:
@@ -255,7 +284,22 @@ class IntelligentScanner:
         logger.info(f"  📈 Analyzing {symbol}...")
         
         try:
-            bars_daily = mover['bars_daily']
+            # Get daily bars for technical analysis (need 200 for MTF)
+            from datetime import datetime, timedelta
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=250)  # Get more for MTF
+            bars_daily = await self.alpaca.get_bars(
+                symbol,
+                timeframe="1Day",
+                limit=250,  # Increased for multi-timeframe analysis
+                start=start_date,
+                end=end_date
+            )
+            
+            if not bars_daily or len(bars_daily) < 20:
+                logger.warning(f"Insufficient daily bars for {symbol}")
+                return None
+            
             current_price = mover['current_price']
             
             closes = [bar['close'] for bar in bars_daily]
@@ -268,13 +312,44 @@ class IntelligentScanner:
                 closes, volumes, highs, lows, current_price
             )
             
+            # NEW: Run quantitative strategies
+            strategy_signal = None
+            if self.strategy_manager and len(bars_daily) >= 30:
+                try:
+                    strategy_signal = self.strategy_manager.analyze_all(
+                        symbol=symbol,
+                        bars=bars_daily,
+                        current_price=current_price
+                    )
+                    if strategy_signal:
+                        action = strategy_signal.get('action', 'HOLD')
+                        strategy_name = strategy_signal.get('strategy', 'Unknown')
+                        logger.info(f"  🎯 Strategy signal for {symbol}: {action} ({strategy_name})")
+                except Exception as e:
+                    logger.error(f"Error running strategies for {symbol}: {e}")
+            
+            # NEW: Multi-timeframe analysis (need 200 bars)
+            mtf_analysis = None
+            if self.mtf_analyzer and len(bars_daily) >= 200:
+                try:
+                    mtf_analysis = self.mtf_analyzer.analyze(bars_daily, current_price)
+                    if mtf_analysis and mtf_analysis.get('available'):
+                        alignment = mtf_analysis.get('alignment', {}).get('alignment', 'UNKNOWN')
+                        logger.info(f"  📈 MTF for {symbol}: {alignment}")
+                except Exception as e:
+                    logger.error(f"Error in MTF analysis for {symbol}: {e}")
+            elif len(bars_daily) < 200:
+                logger.debug(f"  ⚠️ Insufficient bars for MTF ({len(bars_daily)}/200)")
+            
             # Get options data and Greeks
             options_analysis = await self._analyze_options(symbol, current_price)
             
-            # Calculate momentum score (0-100)
+            # Calculate momentum score (0-100) - NOW includes strategy and MTF
             momentum_score = self._calculate_momentum_score(
                 mover['momentum'],
                 technicals,
+                strategy_signal,
+                mtf_analysis,
                 options_analysis
             )
             
@@ -283,9 +358,11 @@ class IntelligentScanner:
                 "current_price": current_price,
                 "momentum": mover['momentum'],
                 "technicals": technicals,
+                "strategy_signal": strategy_signal,  # NEW
+                "mtf_analysis": mtf_analysis,        # NEW
                 "options": options_analysis,
                 "momentum_score": momentum_score,
-                "quote": mover['quote']
+                "snapshot": mover.get('snapshot', {})
             }
             
         except Exception as e:
@@ -300,7 +377,7 @@ class IntelligentScanner:
         lows: List[float],
         current_price: float
     ) -> Dict[str, Any]:
-        """Calculate technical indicators."""
+        """Calculate technical indicators including Bollinger Bands, ATR, and VWAP."""
         
         # Moving averages
         sma_10 = sum(closes[-10:]) / 10 if len(closes) >= 10 else current_price
@@ -309,6 +386,15 @@ class IntelligentScanner:
         
         # RSI (simplified 14-period)
         rsi = self._calculate_rsi(closes, period=14)
+        
+        # Bollinger Bands (20-period, 2 std dev) - NEW
+        bb_upper, bb_middle, bb_lower, bb_width = self._calculate_bollinger_bands(closes, period=20)
+        
+        # ATR (Average True Range) - NEW
+        atr = self._calculate_atr(highs, lows, closes, period=14)
+        
+        # VWAP (Volume Weighted Average Price) - NEW
+        vwap = self._calculate_vwap(closes, highs, lows, volumes)
         
         # Support/Resistance (recent highs/lows)
         support = min(lows[-20:]) if len(lows) >= 20 else current_price * 0.95
@@ -322,6 +408,9 @@ class IntelligentScanner:
         distance_to_resistance = ((resistance - current_price) / current_price) * 100
         distance_to_support = ((current_price - support) / current_price) * 100
         
+        # Bollinger Band position
+        bb_position = "OVERBOUGHT" if current_price > bb_upper else "OVERSOLD" if current_price < bb_lower else "NEUTRAL"
+        
         return {
             "sma_10": sma_10,
             "sma_20": sma_20,
@@ -334,7 +423,18 @@ class IntelligentScanner:
             "volume_trend": volume_trend,
             "avg_volume": avg_volume,
             "price_vs_sma20": "ABOVE" if current_price > sma_20 else "BELOW",
-            "golden_cross": sma_10 > sma_20 > sma_50 if len(closes) >= 50 else False
+            "golden_cross": sma_10 > sma_20 > sma_50 if len(closes) >= 50 else False,
+            # NEW INDICATORS
+            "bollinger_upper": bb_upper,
+            "bollinger_middle": bb_middle,
+            "bollinger_lower": bb_lower,
+            "bollinger_width": bb_width,
+            "bollinger_position": bb_position,
+            "atr": atr,
+            "atr_pct": (atr / current_price * 100) if current_price > 0 else 0,
+            "vwap": vwap,
+            "price_vs_vwap": "ABOVE" if current_price > vwap else "BELOW",
+            "data_source": "calculated"  # ✅ Clear indicator
         }
     
     def _calculate_rsi(self, closes: List[float], period: int = 14) -> float:
@@ -364,6 +464,83 @@ class IntelligentScanner:
         rsi = 100 - (100 / (1 + rs))
         
         return rsi
+    
+    def _calculate_bollinger_bands(self, closes: List[float], period: int = 20, std_dev: float = 2.0) -> tuple:
+        """
+        Calculate Bollinger Bands.
+        
+        Returns:
+            (upper_band, middle_band, lower_band, bandwidth)
+        """
+        if len(closes) < period:
+            current = closes[-1] if closes else 0
+            return (current * 1.02, current, current * 0.98, 0.04)
+        
+        # Middle band (SMA)
+        middle = sum(closes[-period:]) / period
+        
+        # Standard deviation
+        variance = sum((x - middle) ** 2 for x in closes[-period:]) / period
+        std = variance ** 0.5
+        
+        # Upper and lower bands
+        upper = middle + (std_dev * std)
+        lower = middle - (std_dev * std)
+        
+        # Bandwidth (normalized)
+        bandwidth = ((upper - lower) / middle) * 100 if middle > 0 else 0
+        
+        return (upper, middle, lower, bandwidth)
+    
+    def _calculate_atr(self, highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
+        """
+        Calculate Average True Range (ATR) for volatility measurement.
+        
+        Returns:
+            ATR value
+        """
+        if len(closes) < period + 1:
+            return 0.0
+        
+        true_ranges = []
+        for i in range(1, len(closes)):
+            high_low = highs[i] - lows[i]
+            high_close = abs(highs[i] - closes[i-1])
+            low_close = abs(lows[i] - closes[i-1])
+            true_range = max(high_low, high_close, low_close)
+            true_ranges.append(true_range)
+        
+        # Average of last 'period' true ranges
+        atr = sum(true_ranges[-period:]) / period if len(true_ranges) >= period else 0
+        
+        return atr
+    
+    def _calculate_vwap(self, closes: List[float], highs: List[float], lows: List[float], volumes: List[float]) -> float:
+        """
+        Calculate Volume Weighted Average Price (VWAP).
+        
+        Returns:
+            VWAP value
+        """
+        if not closes or not volumes or len(closes) != len(volumes):
+            return closes[-1] if closes else 0
+        
+        # Typical price = (high + low + close) / 3
+        typical_prices = []
+        for i in range(len(closes)):
+            if i < len(highs) and i < len(lows):
+                typical = (highs[i] + lows[i] + closes[i]) / 3
+            else:
+                typical = closes[i]
+            typical_prices.append(typical)
+        
+        # VWAP = sum(typical_price * volume) / sum(volume)
+        cumulative_tp_volume = sum(tp * vol for tp, vol in zip(typical_prices, volumes))
+        cumulative_volume = sum(volumes)
+        
+        vwap = cumulative_tp_volume / cumulative_volume if cumulative_volume > 0 else closes[-1]
+        
+        return vwap
     
     async def _analyze_options(self, symbol: str, current_price: float) -> Dict[str, Any]:
         """Analyze options for the symbol."""
@@ -405,73 +582,112 @@ class IntelligentScanner:
         self,
         momentum: Dict[str, Any],
         technicals: Dict[str, Any],
+        strategy_signal: Optional[Dict[str, Any]],
+        mtf_analysis: Optional[Dict[str, Any]],
         options: Dict[str, Any]
     ) -> float:
         """
-        Calculate comprehensive momentum score (0-100).
+        Calculate comprehensive momentum score (0-100) with quantitative strategies.
         
-        Factors:
-        - Price momentum strength
-        - Volume confirmation
-        - Technical alignment
-        - Trend strength
+        Weighting:
+        - Technical indicators: 30%
+        - Quantitative strategies: 40%
+        - Multi-timeframe: 20%
+        - Momentum/Volume: 10%
         """
         score = 0.0
         
-        # 1. Price momentum (0-30 points)
-        move_pct = abs(momentum['move_pct'])
-        score += min(move_pct * 10, 30)  # Max 30 points
+        # 1. Technical Score (30 points max)
+        technical_score = 0
         
-        # 2. Volume confirmation (0-20 points)
-        vol_ratio = momentum['volume_ratio_5min']
-        score += min(vol_ratio * 10, 20)  # Max 20 points
+        # RSI
+        rsi = technicals.get('rsi', 50)
+        if rsi < 30:
+            technical_score += 10  # Oversold
+        elif rsi > 70:
+            technical_score -= 10  # Overbought
+        elif 40 <= rsi <= 60:
+            technical_score += 5  # Neutral zone
         
-        # 3. Technical alignment (0-25 points)
+        # Price vs SMA
         if technicals['price_vs_sma20'] == "ABOVE" and momentum['direction'] == "UP":
-            score += 10
+            technical_score += 10
         elif technicals['price_vs_sma20'] == "BELOW" and momentum['direction'] == "DOWN":
-            score += 10
+            technical_score += 10
         
-        if 30 <= technicals['rsi'] <= 70:  # Not overbought/oversold
-            score += 10
+        # Golden/Death Cross
+        if technicals.get('golden_cross'):
+            technical_score += 10
         
-        if technicals['golden_cross']:
-            score += 5
+        score += max(0, technical_score) * 0.3
         
-        # 4. Trend strength (0-15 points)
-        if momentum['trend'] in ["STRONG_UP", "STRONG_DOWN"]:
-            score += 15
-        elif momentum['trend'] == "CHOPPY":
-            score += 5
+        # 2. Quantitative Strategy Score (40 points max) - NEW
+        strategy_score = 50  # Neutral default
+        if strategy_signal:
+            action = strategy_signal.get('action', 'HOLD')
+            if action == 'BUY':
+                strategy_score = 100
+            elif action == 'SELL':
+                strategy_score = 0
+            # Boost based on confidence if available
+            confidence = strategy_signal.get('confidence', 0.75)
+            strategy_score *= confidence
         
-        # 5. Volume trend (0-10 points)
-        if technicals['volume_trend'] == "INCREASING":
-            score += 10
-        elif technicals['volume_trend'] == "NORMAL":
-            score += 5
+        score += strategy_score * 0.4
         
-        return min(score, 100)  # Cap at 100
+        # 3. Multi-Timeframe Score (20 points max) - NEW
+        mtf_score = 50  # Neutral default
+        if mtf_analysis and mtf_analysis.get('available'):
+            alignment = mtf_analysis.get('alignment', {}).get('alignment', 'MIXED')
+            if alignment == 'FULLY_ALIGNED_BULLISH':
+                mtf_score = 100
+            elif alignment == 'MOSTLY_BULLISH':
+                mtf_score = 75
+            elif alignment == 'FULLY_ALIGNED_BEARISH':
+                mtf_score = 0
+            elif alignment == 'MOSTLY_BEARISH':
+                mtf_score = 25
+        
+        score += mtf_score * 0.2
+        
+        # 4. Momentum/Volume Score (10 points max)
+        momentum_score = 0
+        
+        # Volume confirmation
+        vol_ratio = momentum.get('volume_ratio_5min', 1.0)
+        if vol_ratio > 2.0:
+            momentum_score += 5
+        elif vol_ratio > 1.5:
+            momentum_score += 3
+        
+        # Trend strength
+        if momentum.get('trend') in ["STRONG_UP", "STRONG_DOWN"]:
+            momentum_score += 5
+        
+        score += min(momentum_score, 10) * 0.1
+        
+        return min(max(score, 0), 100)  # Cap between 0-100
     
-    async def _get_ai_recommendation(self, opportunity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _get_ai_analysis(self, opportunity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Get AI recommendation using Claude for comprehensive analysis.
+        Get AI analysis using Claude for comprehensive insights.
         
         Includes:
         - News sentiment
         - Risk assessment
         - Entry/exit strategy
         - Position sizing
-        - Options vs stock recommendation
+        - Options vs stock analysis
         """
         symbol = opportunity['symbol']
-        logger.info(f"  🤖 Getting AI recommendation for {symbol}...")
+        logger.info(f"  🤖 Getting AI analysis for {symbol}...")
         
         try:
             # Get news sentiment
             news_data = await self.news.get_headlines(symbol, max_headlines=5)
             
             # Build comprehensive prompt for Claude
-            prompt = self._build_recommendation_prompt(opportunity, news_data)
+            prompt = self._build_analysis_prompt(opportunity, news_data)
             
             # Get Claude's analysis
             messages = [
@@ -480,15 +696,15 @@ class IntelligentScanner:
             response = await self.claude.analyze_stock(messages)
             
             # Parse response
-            recommendation = self._parse_ai_recommendation(response, opportunity)
+            analysis = self._parse_ai_analysis(response, opportunity)
             
-            return recommendation
+            return analysis
             
         except Exception as e:
-            logger.error(f"Error getting AI recommendation for {symbol}: {e}")
+            logger.error(f"Error getting AI analysis for {symbol}: {e}")
             return None
     
-    def _build_recommendation_prompt(
+    def _build_analysis_prompt(
         self,
         opportunity: Dict[str, Any],
         news_data: List[str]
@@ -500,7 +716,7 @@ class IntelligentScanner:
         technicals = opportunity['technicals']
         options = opportunity['options']
         
-        prompt = f"""Analyze this trading opportunity and provide a comprehensive recommendation.
+        prompt = f"""Analyze this trading opportunity and provide comprehensive insights.
 
 SYMBOL: {symbol}
 CURRENT PRICE: ${opportunity['current_price']:.2f}
@@ -527,59 +743,82 @@ RECENT NEWS:
 
 MOMENTUM SCORE: {opportunity['momentum_score']:.0f}/100
 
-Provide a JSON response with:
+IMPORTANT: Respond with ONLY valid JSON, no other text. Format:
+
 {{
   "action": "BUY_STOCK|BUY_CALL|BUY_PUT|WAIT",
-  "confidence": 0-100,
-  "reasoning": "2-3 sentence explanation",
-  "entry_strategy": "When and how to enter",
-  "target_price": price target,
-  "stop_loss": stop loss price,
+  "confidence": 85,
+  "reasoning": "2-3 sentence explanation of why this action",
+  "entry_strategy": "When and how to enter the position",
+  "target_price": 495.00,
+  "stop_loss": 478.00,
   "risk_level": "LOW|MEDIUM|HIGH",
   "time_horizon": "SCALP|DAY|SWING",
-  "position_size_pct": 1-10 (% of portfolio),
-  "why_not_other_options": "Why not stock/call/put instead"
-}}"""
+  "position_size_pct": 5,
+  "why_not_other_options": "Why this action vs alternatives"
+}}
+
+Respond with ONLY the JSON object, no markdown, no explanation."""
         
         return prompt
     
-    def _parse_ai_recommendation(
+    def _parse_ai_analysis(
         self,
         ai_response: str,
         opportunity: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Parse AI recommendation response."""
+        """Parse AI analysis response."""
         
         import json
+        import re
         
         try:
             # Try to parse JSON from response
-            recommendation = json.loads(ai_response)
+            analysis = json.loads(ai_response)
         except:
-            # Fallback if JSON parsing fails
-            recommendation = {
-                "action": "WAIT",
-                "confidence": 50,
-                "reasoning": "Unable to parse AI response",
-                "risk_level": "HIGH"
-            }
+            # Try to extract JSON from markdown code blocks
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', ai_response, re.DOTALL)
+            if json_match:
+                try:
+                    analysis = json.loads(json_match.group(1))
+                except:
+                    analysis = None
+            else:
+                # Try to find JSON object in the response
+                json_match = re.search(r'\{[^{}]*"action"[^{}]*\}', ai_response, re.DOTALL)
+                if json_match:
+                    try:
+                        analysis = json.loads(json_match.group(0))
+                    except:
+                        analysis = None
+                else:
+                    analysis = None
+            
+            # If still no valid JSON, use the full response as reasoning
+            if not analysis:
+                analysis = {
+                    "action": "WAIT",
+                    "confidence": 50,
+                    "reasoning": ai_response[:500] if len(ai_response) > 500 else ai_response,
+                    "risk_level": "HIGH"
+                }
         
         # Add opportunity data
-        recommendation['symbol'] = opportunity['symbol']
-        recommendation['current_price'] = opportunity['current_price']
-        recommendation['momentum_score'] = opportunity['momentum_score']
-        recommendation['momentum'] = opportunity['momentum']
-        recommendation['technicals'] = opportunity['technicals']
-        recommendation['timestamp'] = datetime.now().isoformat()
+        analysis['symbol'] = opportunity['symbol']
+        analysis['current_price'] = opportunity['current_price']
+        analysis['momentum_score'] = opportunity['momentum_score']
+        analysis['momentum'] = opportunity['momentum']
+        analysis['technicals'] = opportunity['technicals']
+        analysis['timestamp'] = datetime.now().isoformat()
         
-        return recommendation
+        return analysis
     
     async def _generate_scan_summary(
         self,
         watchlist: List[str],
         momentum_results: Dict[str, Any],
         analyzed_opportunities: List[Dict[str, Any]],
-        ai_recommendations: List[Dict[str, Any]]
+        ai_analysis: List[Dict[str, Any]]
     ) -> str:
         """Generate human-readable scan summary."""
         
@@ -590,14 +829,14 @@ Provide a JSON response with:
 - Symbols Scanned: {len(watchlist)}
 - Momentum Movers: {len(momentum_results['movers'])}
 - Analyzed Opportunities: {len(analyzed_opportunities)}
-- AI Recommendations: {len(ai_recommendations)}
+- AI Analysis: {len(ai_analysis)}
 
 """
         
-        if ai_recommendations:
+        if ai_analysis:
             summary += "🎯 **TOP OPPORTUNITIES:**\n\n"
             
-            for i, rec in enumerate(ai_recommendations[:3], 1):
+            for i, rec in enumerate(ai_analysis[:3], 1):
                 summary += f"{i}. **{rec['symbol']}** - ${rec['current_price']:.2f}\n"
                 summary += f"   Action: {rec['action']} (Confidence: {rec['confidence']}%)\n"
                 summary += f"   {rec['reasoning']}\n"
@@ -606,10 +845,10 @@ Provide a JSON response with:
             summary += "⏸️ **No actionable opportunities found at this time.**\n\n"
         
         summary += "📈 **NEXT STEPS:**\n"
-        if ai_recommendations:
-            summary += "- Review top opportunities above\n"
+        if ai_analysis:
+            summary += "- Review opportunities above\n"
             summary += "- Check entry strategies\n"
-            summary += "- Validate with your risk tolerance\n"
+            summary += "- This is analysis, not financial advice\n"
             summary += "- Execute trades if conditions align\n"
         else:
             summary += "- Continue monitoring for momentum\n"

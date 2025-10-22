@@ -150,7 +150,7 @@ class DatabaseService:
         await self.initialize()
         
         total_value = quantity * price
-        timestamp = datetime.now()
+        timestamp = datetime.now().isoformat()  # Convert to string for SQLite
         
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("""
@@ -399,3 +399,328 @@ def get_database_service() -> DatabaseService:
     if _database_service is None:
         _database_service = DatabaseService()
     return _database_service
+
+
+# ==================== CACHE SERVICE ====================
+
+import time
+from collections import defaultdict, deque
+
+
+class CacheService:
+    """In-memory cache with TTL support for Tara."""
+    
+    def __init__(self, default_ttl: int = 900):  # 15 minutes default
+        """Initialize cache service.
+        
+        Args:
+            default_ttl: Default time-to-live in seconds (900 = 15 minutes)
+        """
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._default_ttl = default_ttl
+        logger.info(f"Cache service initialized with {default_ttl}s TTL")
+    
+    async def get(self, key: str) -> Optional[Any]:
+        """Get value from cache.
+        
+        Args:
+            key: Cache key (symbol, contract_id, order_id, thread_id)
+            
+        Returns:
+            Cached value or None if expired/not found
+        """
+        if key not in self._cache:
+            return None
+        
+        entry = self._cache[key]
+        
+        # Check if expired
+        if time.time() > entry['expires_at']:
+            del self._cache[key]
+            logger.debug(f"Cache expired: {key}")
+            return None
+        
+        logger.debug(f"Cache hit: {key}")
+        return entry['value']
+    
+    async def set(self, key: str, value: Any, ttl: Optional[int] = None):
+        """Set value in cache with TTL.
+        
+        Args:
+            key: Cache key
+            value: Value to cache
+            ttl: Time-to-live in seconds (uses default if None)
+        """
+        ttl = ttl or self._default_ttl
+        expires_at = time.time() + ttl
+        
+        self._cache[key] = {
+            'value': value,
+            'expires_at': expires_at,
+            'created_at': time.time()
+        }
+        
+        logger.debug(f"Cache set: {key} (TTL: {ttl}s)")
+    
+    async def delete(self, key: str):
+        """Delete value from cache.
+        
+        Args:
+            key: Cache key to delete
+        """
+        if key in self._cache:
+            del self._cache[key]
+            logger.debug(f"Cache deleted: {key}")
+    
+    async def exists(self, key: str) -> bool:
+        """Check if key exists and is not expired.
+        
+        Args:
+            key: Cache key
+            
+        Returns:
+            True if key exists and valid, False otherwise
+        """
+        value = await self.get(key)
+        return value is not None
+    
+    async def clear(self):
+        """Clear all cache entries."""
+        self._cache.clear()
+        logger.info("Cache cleared")
+    
+    async def cleanup_expired(self):
+        """Remove all expired entries."""
+        now = time.time()
+        expired_keys = [
+            key for key, entry in self._cache.items()
+            if now > entry['expires_at']
+        ]
+        
+        for key in expired_keys:
+            del self._cache[key]
+        
+        if expired_keys:
+            logger.info(f"Cleaned up {len(expired_keys)} expired cache entries")
+    
+    async def get_stats(self) -> Dict[str, Any]:
+        """Get cache statistics.
+        
+        Returns:
+            Dictionary with cache stats
+        """
+        await self.cleanup_expired()
+        
+        return {
+            'total_entries': len(self._cache),
+            'default_ttl': self._default_ttl,
+            'memory_size_estimate': len(str(self._cache))
+        }
+    
+    # Convenience methods for specific cache keys
+    async def get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Get cached position for symbol."""
+        return await self.get(f"position:{symbol}")
+    
+    async def set_position(self, symbol: str, position: Dict[str, Any], ttl: Optional[int] = None):
+        """Cache position for symbol."""
+        await self.set(f"position:{symbol}", position, ttl)
+    
+    async def get_order(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """Get cached order."""
+        return await self.get(f"order:{order_id}")
+    
+    async def set_order(self, order_id: str, order: Dict[str, Any], ttl: Optional[int] = None):
+        """Cache order."""
+        await self.set(f"order:{order_id}", order, ttl)
+    
+    async def get_thread_id(self, symbol: str) -> Optional[str]:
+        """Get cached Discord thread ID for symbol."""
+        return await self.get(f"thread:{symbol}")
+    
+    async def set_thread_id(self, symbol: str, thread_id: str, ttl: Optional[int] = None):
+        """Cache Discord thread ID for symbol."""
+        await self.set(f"thread:{symbol}", thread_id, ttl)
+    
+    async def get_contract(self, contract_id: str) -> Optional[Dict[str, Any]]:
+        """Get cached options contract."""
+        return await self.get(f"contract:{contract_id}")
+    
+    async def set_contract(self, contract_id: str, contract: Dict[str, Any], ttl: Optional[int] = None):
+        """Cache options contract."""
+        await self.set(f"contract:{contract_id}", contract, ttl)
+
+
+# Global cache instance
+_cache_service: Optional[CacheService] = None
+
+
+def get_cache_service() -> CacheService:
+    """Get global cache service instance."""
+    global _cache_service
+    if _cache_service is None:
+        _cache_service = CacheService()
+    return _cache_service
+
+
+# ==================== API TRACKER ====================
+
+
+class APITracker:
+    """Track API calls and rate limits for Tara."""
+    
+    def __init__(self, rate_limit_per_minute: int = 200):
+        """Initialize API tracker.
+        
+        Args:
+            rate_limit_per_minute: Maximum API calls per minute
+        """
+        self.rate_limit = rate_limit_per_minute
+        self.calls_today: Dict[str, int] = defaultdict(int)
+        self.errors_today: Dict[str, int] = defaultdict(int)
+        self.call_history: deque = deque(maxlen=100)  # Last 100 calls
+        self.last_reset = datetime.now().replace(hour=0, minute=0, second=0)
+        
+        # Rate limiting
+        self.call_times: deque = deque(maxlen=rate_limit_per_minute)
+        
+        logger.info(f"API Tracker initialized (limit: {rate_limit_per_minute}/min)")
+    
+    async def record_call(self, endpoint: str, status_code: int, latency_ms: float, 
+                         provider: str = "Alpaca") -> bool:
+        """Record an API call.
+        
+        Args:
+            endpoint: API endpoint called
+            status_code: HTTP status code
+            latency_ms: Response time in milliseconds
+            provider: API provider name
+            
+        Returns:
+            True if call was successful, False if error
+        """
+        # Check if we need to reset daily counters
+        await self._check_daily_reset()
+        
+        # Record call
+        now = time.time()
+        call_data = {
+            'endpoint': endpoint,
+            'status': status_code,
+            'latency_ms': latency_ms,
+            'provider': provider,
+            'timestamp': now
+        }
+        
+        self.call_history.append(call_data)
+        self.call_times.append(now)
+        self.calls_today[provider] += 1
+        
+        # Track errors
+        is_error = status_code >= 400
+        if is_error:
+            self.errors_today[provider] += 1
+            logger.warning(f"API error: {endpoint} returned {status_code}")
+        
+        return not is_error
+    
+    async def can_make_call(self) -> bool:
+        """Check if we can make an API call without exceeding rate limit.
+        
+        Returns:
+            True if call is allowed, False if rate limited
+        """
+        now = time.time()
+        minute_ago = now - 60
+        
+        # Remove calls older than 1 minute
+        while self.call_times and self.call_times[0] < minute_ago:
+            self.call_times.popleft()
+        
+        # Check if we're at limit
+        if len(self.call_times) >= self.rate_limit:
+            logger.warning(f"Rate limit reached: {len(self.call_times)}/{self.rate_limit} calls/min")
+            return False
+        
+        return True
+    
+    async def wait_if_needed(self):
+        """Wait if rate limit is reached."""
+        if not await self.can_make_call():
+            # Wait until oldest call is more than 1 minute old
+            if self.call_times:
+                oldest_call = self.call_times[0]
+                wait_time = 60 - (time.time() - oldest_call)
+                if wait_time > 0:
+                    logger.info(f"Rate limit: waiting {wait_time:.1f}s")
+                    await asyncio.sleep(wait_time)
+    
+    async def get_status(self, provider: str = "Alpaca") -> Dict[str, Any]:
+        """Get API status and metrics.
+        
+        Args:
+            provider: API provider name
+            
+        Returns:
+            Status dictionary with metrics
+        """
+        await self._check_daily_reset()
+        
+        # Calculate current rate
+        now = time.time()
+        minute_ago = now - 60
+        calls_last_minute = sum(1 for t in self.call_times if t >= minute_ago)
+        
+        # Get recent calls
+        recent_calls = list(self.call_history)[-10:]
+        last_calls_formatted = [
+            {
+                'endpoint': call['endpoint'],
+                'status': call['status'],
+                'latency_ms': round(call['latency_ms'], 2)
+            }
+            for call in recent_calls
+        ]
+        
+        # Calculate next reset time
+        from datetime import timedelta
+        tomorrow = datetime.now().replace(hour=0, minute=0, second=0) + timedelta(days=1)
+        
+        return {
+            'provider': provider,
+            'calls_today': self.calls_today[provider],
+            'errors': self.errors_today[provider],
+            'rate_limit_used': calls_last_minute,
+            'rate_limit_total': self.rate_limit,
+            'last_calls': last_calls_formatted,
+            'next_reset': tomorrow.isoformat(),
+            'status': 'healthy' if self.errors_today[provider] < 10 else 'degraded'
+        }
+    
+    async def _check_daily_reset(self):
+        """Reset daily counters if it's a new day."""
+        now = datetime.now()
+        if now.date() > self.last_reset.date():
+            logger.info("Resetting daily API counters")
+            self.calls_today.clear()
+            self.errors_today.clear()
+            self.last_reset = now.replace(hour=0, minute=0, second=0)
+    
+    async def get_metrics(self) -> Dict[str, Any]:
+        """Get detailed metrics for all providers."""
+        metrics = {}
+        for provider in set(list(self.calls_today.keys()) + list(self.errors_today.keys())):
+            metrics[provider] = await self.get_status(provider)
+        return metrics
+
+
+# Global tracker instance
+_api_tracker: Optional[APITracker] = None
+
+
+def get_api_tracker() -> APITracker:
+    """Get global API tracker instance."""
+    global _api_tracker
+    if _api_tracker is None:
+        _api_tracker = APITracker()
+    return _api_tracker

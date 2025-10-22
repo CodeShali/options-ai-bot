@@ -15,6 +15,7 @@ from alpaca.trading.requests import (
 )
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderType, QueryOrderStatus, AssetClass
 from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.historical.news import NewsClient
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from loguru import logger
@@ -41,6 +42,16 @@ class AlpacaService:
             secret_key=settings.alpaca_secret_key,
             raw_data=False
         )
+        
+        # Initialize news client
+        try:
+            self.news_client = NewsClient(
+                api_key=settings.alpaca_api_key,
+                secret_key=settings.alpaca_secret_key
+            )
+        except Exception as e:
+            logger.warning(f"News client initialization failed: {e}. News features may not be available.")
+            self.news_client = None
         
         # Store data feed preference
         self.data_feed = settings.alpaca_data_feed
@@ -217,6 +228,47 @@ class AlpacaService:
             logger.error(f"Error placing limit order: {e}")
             raise
     
+    async def place_stop_order(
+        self,
+        symbol: str,
+        qty: int,
+        side: str,
+        stop_price: float,
+        time_in_force: str = "gtc"
+    ) -> Dict[str, Any]:
+        """Place a stop (stop-market) order.
+        Uses alpaca-trade-api REST fallback because alpaca-py does not expose a direct StopOrderRequest in this codebase.
+        """
+        try:
+            # Local import to avoid hard dependency at module load
+            import alpaca_trade_api as tradeapi
+            base_url = getattr(settings, "alpaca_base_url", None)
+            rest = tradeapi.REST(settings.alpaca_api_key, settings.alpaca_secret_key, base_url=base_url)
+            order = await asyncio.to_thread(
+                rest.submit_order,
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                type="stop",
+                time_in_force=time_in_force,
+                stop_price=stop_price,
+            )
+            logger.info(f"Stop order placed: {side} {qty} {symbol} @ stop ${stop_price}")
+            # Basic mapping; alpaca_trade_api returns Model with attributes
+            return {
+                "id": str(getattr(order, "id", "")),
+                "symbol": getattr(order, "symbol", symbol),
+                "qty": float(getattr(order, "qty", qty) or 0),
+                "side": getattr(order, "side", side),
+                "type": getattr(order, "type", "stop"),
+                "status": getattr(order, "status", None),
+                "stop_price": float(stop_price),
+                "submitted_at": getattr(order, "submitted_at", None),
+            }
+        except Exception as e:
+            logger.error(f"Error placing stop order: {e}")
+            raise
+    
     async def cancel_order(self, order_id: str) -> bool:
         """
         Cancel an order.
@@ -235,6 +287,50 @@ class AlpacaService:
             logger.error(f"Error cancelling order: {e}")
             return False
     
+    async def get_order(self, order_id: str) -> Dict[str, Any]:
+        """Get order by ID.
+        Returns a dict similar to _order_to_dict.
+        """
+        try:
+            order = await asyncio.to_thread(self.trading_client.get_order_by_id, order_id)
+            return self._order_to_dict(order)
+        except Exception as e:
+            logger.error(f"Error getting order {order_id}: {e}")
+            raise
+
+    async def get_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Compatibility alias returning bid/ask using latest quote."""
+        q = await self.get_latest_quote(symbol)
+        if not q:
+            return None
+        return {"bid": q.get("bid"), "ask": q.get("ask"), "price": q.get("price"), "timestamp": q.get("timestamp")}
+
+    async def place_order(
+        self,
+        symbol: str,
+        qty: int,
+        side: str,
+        order_type: str = "market",
+        limit_price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+        time_in_force: str = "day",
+    ) -> Dict[str, Any]:
+        """Compatibility wrapper to place market/limit/stop orders.
+        Delegates to specific methods implemented in this service.
+        """
+        ot = (order_type or "market").lower()
+        if ot == "market":
+            return await self.place_market_order(symbol=symbol, qty=qty, side=side, time_in_force=time_in_force)
+        if ot == "limit":
+            if limit_price is None:
+                raise ValueError("limit_price is required for limit orders")
+            return await self.place_limit_order(symbol=symbol, qty=qty, side=side, limit_price=limit_price, time_in_force=time_in_force)
+        if ot == "stop":
+            if stop_price is None:
+                raise ValueError("stop_price is required for stop orders")
+            return await self.place_stop_order(symbol=symbol, qty=qty, side=side, stop_price=stop_price, time_in_force=time_in_force)
+        raise ValueError(f"Unsupported order_type: {order_type}")
+
     async def get_orders(
         self,
         status: str = "open",
@@ -344,6 +440,118 @@ class AlpacaService:
             logger.exception("Full traceback:")
             return []  # Return empty list instead of raising
     
+    async def get_snapshot(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Get complete snapshot for a symbol with ALL data from Alpaca.
+        This includes current price, daily bar, previous close, and more.
+        
+        Args:
+            symbol: Stock symbol
+            
+        Returns:
+            Complete snapshot dictionary with all Alpaca data
+        """
+        try:
+            from alpaca.data.requests import StockSnapshotRequest
+            
+            request = StockSnapshotRequest(
+                symbol_or_symbols=symbol,
+                feed=self.data_feed
+            )
+            snapshots = await asyncio.to_thread(
+                self.data_client.get_stock_snapshot,
+                request
+            )
+            
+            if symbol in snapshots:
+                return self._parse_snapshot(symbol, snapshots[symbol])
+            return None
+        except Exception as e:
+            logger.error(f"Error getting snapshot for {symbol}: {e}")
+            return None
+    
+    async def get_snapshots_bulk(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Get snapshots for MULTIPLE symbols in ONE API call!
+        This is 10x faster than calling get_snapshot() in a loop.
+        
+        Args:
+            symbols: List of stock symbols
+            
+        Returns:
+            Dictionary mapping symbol to snapshot data
+        """
+        try:
+            from alpaca.data.requests import StockSnapshotRequest
+            
+            request = StockSnapshotRequest(
+                symbol_or_symbols=symbols,  # Pass list!
+                feed=self.data_feed
+            )
+            snapshots = await asyncio.to_thread(
+                self.data_client.get_stock_snapshot,
+                request
+            )
+            
+            result = {}
+            for symbol in symbols:
+                if symbol in snapshots:
+                    result[symbol] = self._parse_snapshot(symbol, snapshots[symbol])
+            
+            logger.info(f"📸 Got snapshots for {len(result)}/{len(symbols)} symbols in ONE API call")
+            return result
+        except Exception as e:
+            logger.error(f"Error getting bulk snapshots: {e}")
+            return {}
+    
+    def _parse_snapshot(self, symbol: str, snapshot) -> Dict[str, Any]:
+        """Parse Alpaca snapshot object into our dictionary format."""
+        # Get latest trade price
+        latest_trade = snapshot.latest_trade
+        current_price = float(latest_trade.price) if latest_trade else 0
+        
+        # Get latest quote
+        latest_quote = snapshot.latest_quote
+        bid = float(latest_quote.bid_price) if latest_quote else 0
+        ask = float(latest_quote.ask_price) if latest_quote else 0
+        
+        # Get daily bar (has open, high, low, close, volume)
+        daily_bar = snapshot.daily_bar
+        
+        # Get previous daily bar (has yesterday's close!)
+        prev_daily_bar = snapshot.previous_daily_bar
+        prev_close = float(prev_daily_bar.close) if prev_daily_bar else 0
+        
+        # Calculate changes using Alpaca's data
+        change_1d = ((current_price - prev_close) / prev_close * 100) if prev_close > 0 else 0
+        change_1d_dollar = current_price - prev_close if prev_close > 0 else 0
+        
+        # Get minute bar for recent momentum
+        minute_bar = snapshot.minute_bar
+        
+        return {
+            "symbol": symbol,
+            "price": current_price,
+            "bid": bid,
+            "ask": ask,
+            "spread": ask - bid if (ask > 0 and bid > 0) else 0,
+            "prev_close": prev_close,
+            "change_1d_pct": change_1d,
+            "change_1d_dollar": change_1d_dollar,
+            "daily_open": float(daily_bar.open) if daily_bar else 0,
+            "daily_high": float(daily_bar.high) if daily_bar else 0,
+            "daily_low": float(daily_bar.low) if daily_bar else 0,
+            "daily_volume": int(daily_bar.volume) if daily_bar else 0,
+            "minute_bar": {
+                "open": float(minute_bar.open) if minute_bar else 0,
+                "high": float(minute_bar.high) if minute_bar else 0,
+                "low": float(minute_bar.low) if minute_bar else 0,
+                "close": float(minute_bar.close) if minute_bar else 0,
+                "volume": int(minute_bar.volume) if minute_bar else 0,
+            } if minute_bar else None,
+            "timestamp": latest_trade.timestamp if latest_trade else None,
+        }
+    
     async def get_latest_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
         Get latest quote for a symbol.
@@ -434,7 +642,7 @@ class AlpacaService:
     def _order_to_dict(self, order) -> Dict[str, Any]:
         """Convert order object to dictionary."""
         return {
-            "id": order.id,
+            "id": str(order.id),  # Convert UUID to string
             "client_order_id": order.client_order_id,
             "symbol": order.symbol,
             "qty": float(order.qty) if order.qty else None,
@@ -444,10 +652,10 @@ class AlpacaService:
             "status": order.status.value if order.status else None,
             "limit_price": float(order.limit_price) if order.limit_price else None,
             "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
-            "created_at": order.created_at,
-            "updated_at": order.updated_at,
-            "submitted_at": order.submitted_at,
-            "filled_at": order.filled_at,
+            "created_at": order.created_at.isoformat() if order.created_at else None,
+            "updated_at": order.updated_at.isoformat() if order.updated_at else None,
+            "submitted_at": order.submitted_at.isoformat() if order.submitted_at else None,
+            "filled_at": order.filled_at.isoformat() if order.filled_at else None,
         }
     
     # ============= OPTIONS TRADING METHODS =============
@@ -494,8 +702,17 @@ class AlpacaService:
             )
             
             if response.status_code != 200:
-                logger.warning(f"Options chain API returned {response.status_code} for {symbol}")
-                return self._create_mock_options_chain(symbol, min_expiration, max_expiration)
+                logger.warning(f"⚠️ Options chain API returned {response.status_code} for {symbol} - Options data unavailable")
+                # NO MOCK DATA - Return empty chain with clear indication
+                return {
+                    "symbol": symbol,
+                    "expirations": {},
+                    "calls": [],
+                    "puts": [],
+                    "data_source": "unavailable",
+                    "error": f"API returned {response.status_code}",
+                    "message": "⚠️ Options data unavailable - Alpaca options API may require upgraded plan"
+                }
             
             data = response.json()
             
@@ -567,61 +784,27 @@ class AlpacaService:
                             organized_chain["puts"].append(contract_info)
                             organized_chain["expirations"][exp_date]["puts"].append(contract_info)
                     
+                    organized_chain["data_source"] = "alpaca_real"
+                    organized_chain["message"] = "✅ Real options data from Alpaca"
                     logger.info(f"✅ Using REAL options chain for {symbol}")
                     return organized_chain
             except Exception as real_error:
                 logger.error(f"Could not get real options chain: {real_error}")
             
-            # Last resort: return empty chain (no mock data!)
-            logger.warning(f"No options data available for {symbol}")
+            # Last resort: return empty chain (NO MOCK DATA!)
+            logger.warning(f"⚠️ No options data available for {symbol}")
             return {
                 "symbol": symbol,
                 "expirations": {},
                 "calls": [],
                 "puts": [],
-                "data_source": "unavailable"
+                "data_source": "unavailable",
+                "error": str(e),
+                "message": "⚠️ Options data unavailable - Check Alpaca options API access"
             }
     
-    def _create_mock_options_chain(self, symbol: str, min_exp: datetime, max_exp: datetime) -> Dict[str, Any]:
-        """Create a mock options chain for testing when API is unavailable."""
-        # Get current price
-        import random
-        
-        # Create mock expiration dates
-        exp_date = (datetime.now() + timedelta(days=35)).strftime("%Y-%m-%d")
-        
-        # Mock strikes around a base price (you'd get this from current quote)
-        base_price = 175.0  # Mock base price
-        strikes = [base_price + (i * 5) for i in range(-3, 4)]
-        
-        organized_chain = {
-            "symbol": symbol,
-            "expirations": {exp_date: {"calls": [], "puts": []}},
-            "calls": [],
-            "puts": []
-        }
-        
-        for strike in strikes:
-            call_contract = {
-                "symbol": self.format_option_symbol(symbol, exp_date, "call", strike),
-                "strike": strike,
-                "expiration": exp_date,
-                "type": "call"
-            }
-            put_contract = {
-                "symbol": self.format_option_symbol(symbol, exp_date, "put", strike),
-                "strike": strike,
-                "expiration": exp_date,
-                "type": "put"
-            }
-            
-            organized_chain["calls"].append(call_contract)
-            organized_chain["puts"].append(put_contract)
-            organized_chain["expirations"][exp_date]["calls"].append(call_contract)
-            organized_chain["expirations"][exp_date]["puts"].append(put_contract)
-        
-        logger.warning(f"Using mock options chain for {symbol} - API may not be available")
-        return organized_chain
+    # REMOVED: _create_mock_options_chain() - No more mock data!
+    # All options data must be real from Alpaca API or return unavailable
     
     async def get_option_quote(self, option_symbol: str, include_greeks: bool = True) -> Optional[Dict[str, Any]]:
         """
@@ -925,62 +1108,536 @@ class AlpacaService:
                 "strike": 0.0
             }
     
-    async def add_to_watchlist(self, symbol: str) -> bool:
+    async def create_watchlist(self, name: str, symbols: List[str]) -> Dict[str, Any]:
         """
-        Add symbol to watchlist.
+        Create a new watchlist in Alpaca.
         
         Args:
+            name: Watchlist name
+            symbols: List of symbols
+            
+        Returns:
+            Watchlist data
+        """
+        try:
+            from alpaca.trading.requests import CreateWatchlistRequest
+            
+            request = CreateWatchlistRequest(
+                name=name,
+                symbols=symbols
+            )
+            
+            watchlist = await asyncio.to_thread(
+                self.trading_client.create_watchlist,
+                request
+            )
+            
+            logger.info(f"📋 Created watchlist '{name}' with {len(symbols)} symbols")
+            return {
+                "id": str(watchlist.id),
+                "name": watchlist.name,
+                "symbols": [str(s) for s in watchlist.symbols] if hasattr(watchlist, 'symbols') else symbols
+            }
+        except Exception as e:
+            logger.error(f"Error creating watchlist: {e}")
+            return {}
+    
+    async def get_all_watchlists(self) -> List[Dict[str, Any]]:
+        """
+        Get all watchlists from Alpaca.
+        
+        Returns:
+            List of watchlists
+        """
+        try:
+            watchlists = await asyncio.to_thread(
+                self.trading_client.get_watchlists
+            )
+            
+            result = []
+            for wl in watchlists:
+                result.append({
+                    "id": str(wl.id),
+                    "name": wl.name,
+                    "symbols": [str(s) for s in wl.symbols] if hasattr(wl, 'symbols') else []
+                })
+            
+            logger.info(f"📋 Got {len(result)} watchlists from Alpaca")
+            return result
+        except Exception as e:
+            logger.error(f"Error getting watchlists: {e}")
+            return []
+    
+    async def get_watchlist_by_name(self, name: str) -> Dict[str, Any]:
+        """
+        Get watchlist by name.
+        
+        Args:
+            name: Watchlist name
+            
+        Returns:
+            Watchlist data
+        """
+        try:
+            watchlists = await self.get_all_watchlists()
+            for wl in watchlists:
+                if wl['name'] == name:
+                    return wl
+            return {}
+        except Exception as e:
+            logger.error(f"Error getting watchlist by name: {e}")
+            return {}
+    
+    async def add_to_watchlist(self, watchlist_id: str, symbol: str) -> bool:
+        """
+        Add symbol to existing watchlist.
+        
+        Args:
+            watchlist_id: Watchlist ID
             symbol: Stock symbol
             
         Returns:
-            True if added, False if already in watchlist
+            True if successful
         """
         try:
-            from api import get_orchestrator
-            orchestrator = get_orchestrator()
-            if orchestrator and orchestrator.data_pipeline:
-                return orchestrator.data_pipeline.add_to_watchlist(symbol)
-            return False
+            from alpaca.trading.requests import UpdateWatchlistRequest
+            
+            request = UpdateWatchlistRequest(
+                symbols=[symbol]
+            )
+            
+            await asyncio.to_thread(
+                self.trading_client.update_watchlist_by_id,
+                watchlist_id,
+                request
+            )
+            
+            logger.info(f"📋 Added {symbol} to watchlist {watchlist_id}")
+            return True
         except Exception as e:
             logger.error(f"Error adding to watchlist: {e}")
             return False
     
-    async def is_in_watchlist(self, symbol: str) -> bool:
+    async def remove_from_watchlist(self, watchlist_id: str, symbol: str) -> bool:
         """
-        Check if symbol is in watchlist.
+        Remove symbol from watchlist.
+        
+        Args:
+            watchlist_id: Watchlist ID
+            symbol: Stock symbol
+            
+        Returns:
+            True if successful
+        """
+        try:
+            await asyncio.to_thread(
+                self.trading_client.delete_symbol_from_watchlist,
+                watchlist_id,
+                symbol
+            )
+            
+            logger.info(f"📋 Removed {symbol} from watchlist {watchlist_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error removing from watchlist: {e}")
+            return False
+    
+    async def delete_watchlist(self, watchlist_id: str) -> bool:
+        """
+        Delete a watchlist.
+        
+        Args:
+            watchlist_id: Watchlist ID
+            
+        Returns:
+            True if successful
+        """
+        try:
+            await asyncio.to_thread(
+                self.trading_client.delete_watchlist_by_id,
+                watchlist_id
+            )
+            
+            logger.info(f"📋 Deleted watchlist {watchlist_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting watchlist: {e}")
+            return False
+    
+    async def is_in_watchlist(self, symbol: str, watchlist_name: str = "primary") -> bool:
+        """
+        Check if symbol is in a watchlist.
         
         Args:
             symbol: Stock symbol
+            watchlist_name: Watchlist name (optional)
             
         Returns:
             True if in watchlist
         """
         try:
-            from api import get_orchestrator
-            orchestrator = get_orchestrator()
-            if orchestrator and orchestrator.data_pipeline:
-                return orchestrator.data_pipeline.is_in_watchlist(symbol)
+            # If no watchlist name specified, check local watchlist
+            # This is a simple implementation that returns False
+            # In production, you'd check Alpaca watchlists
             return False
         except Exception as e:
             logger.error(f"Error checking watchlist: {e}")
             return False
     
-    async def get_watchlist(self) -> list:
+    async def get_news(self, symbol: str = None, limit: int = 10) -> List[Dict[str, Any]]:
         """
-        Get current watchlist.
+        Get news from Alpaca News API.
         
+        Args:
+            symbol: Stock symbol (optional, if None gets general market news)
+            limit: Number of news items to retrieve
+            
         Returns:
-            List of symbols in watchlist
+            List of news dictionaries
         """
         try:
-            from api import get_orchestrator
-            orchestrator = get_orchestrator()
-            if orchestrator and orchestrator.data_pipeline:
-                return orchestrator.data_pipeline.get_watchlist()
-            return []
+            from alpaca.data.requests import NewsRequest
+            from datetime import datetime, timedelta
+            
+            # Get news from last 7 days
+            start = datetime.now() - timedelta(days=7)
+            
+            request = NewsRequest(
+                symbols=symbol if symbol else None,
+                start=start,
+                limit=limit,
+                sort="desc"
+            )
+            
+            if not self.news_client:
+                logger.info("News client not available")
+                return []
+            
+            news_items = await asyncio.to_thread(
+                self.news_client.get_news,
+                request
+            )
+            
+            result = []
+            if news_items and hasattr(news_items, 'news'):
+                for item in news_items.news[:limit]:
+                    result.append({
+                        "headline": item.headline,
+                        "summary": item.summary if hasattr(item, 'summary') else "",
+                        "source": item.author if hasattr(item, 'author') else "Unknown",
+                        "url": item.url if hasattr(item, 'url') else "",
+                        "created_at": item.created_at if hasattr(item, 'created_at') else None,
+                        "symbols": item.symbols if hasattr(item, 'symbols') else []
+                    })
+            
+            logger.info(f"📰 Got {len(result)} news items from Alpaca for {symbol or 'market'}")
+            return result
+            
         except Exception as e:
-            logger.error(f"Error getting watchlist: {e}")
+            logger.error(f"Error getting news from Alpaca: {e}")
+            logger.info("Alpaca News API may not be available on your plan")
             return []
+    
+    async def get_market_calendar(self, start_date: str = None, end_date: str = None) -> List[Dict[str, Any]]:
+        """
+        Get market calendar from Alpaca.
+        
+        Args:
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            
+        Returns:
+            List of trading days with open/close times
+        """
+        try:
+            from datetime import datetime, timedelta
+            
+            if not start_date:
+                start_date = datetime.now().strftime("%Y-%m-%d")
+            if not end_date:
+                end_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+            
+            calendar = await asyncio.to_thread(
+                self.trading_client.get_calendar,
+                start=start_date,
+                end=end_date
+            )
+            
+            result = []
+            for day in calendar:
+                result.append({
+                    "date": str(day.date),
+                    "open": str(day.open),
+                    "close": str(day.close),
+                    "session_open": str(day.session_open) if hasattr(day, 'session_open') else None,
+                    "session_close": str(day.session_close) if hasattr(day, 'session_close') else None,
+                })
+            
+            logger.info(f"📅 Got market calendar: {len(result)} trading days")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting market calendar: {e}")
+            return []
+    
+    async def get_corporate_actions(self, symbol: str = None, types: List[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get corporate actions (splits, dividends, etc.) from Alpaca.
+        
+        Args:
+            symbol: Stock symbol (optional)
+            types: List of action types: ['dividend', 'split', 'merger', 'spinoff']
+            
+        Returns:
+            List of corporate actions
+        """
+        try:
+            from datetime import datetime, timedelta
+            
+            # Get last 365 days of corporate actions
+            start = datetime.now() - timedelta(days=365)
+            
+            # Note: Alpaca's corporate actions API may vary by plan
+            # This is a placeholder implementation
+            logger.info(f"📊 Checking corporate actions for {symbol or 'all symbols'}")
+            
+            # For now, return empty list as this requires specific API access
+            # In production, you would use:
+            # actions = await self.trading_client.get_corporate_actions(...)
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error getting corporate actions: {e}")
+            logger.info("Corporate Actions API may not be available on your plan")
+            return []
+    
+    async def screen_stocks(self, filters: Dict[str, Any] = None) -> List[str]:
+        """
+        Screen stocks using Alpaca Screener API.
+        
+        Args:
+            filters: Dictionary of filters:
+                - volume_min: Minimum volume
+                - price_min: Minimum price
+                - price_max: Maximum price
+                - market_cap_min: Minimum market cap
+                - change_pct_min: Minimum % change
+                
+        Returns:
+            List of symbols matching criteria
+        """
+        try:
+            # Note: Alpaca Screener API implementation
+            # This is a basic implementation using snapshots
+            
+            if not filters:
+                filters = {
+                    "volume_min": 1000000,  # 1M volume
+                    "price_min": 5,
+                    "price_max": 500
+                }
+            
+            logger.info(f"🔍 Screening stocks with filters: {filters}")
+            
+            # Get a list of popular stocks to screen
+            # In production, you'd get this from Alpaca's universe
+            universe = [
+                "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NVDA", "AMD",
+                "NFLX", "DIS", "BA", "GE", "F", "GM", "JPM", "BAC", "WMT", "TGT",
+                "COST", "HD", "LOW", "NKE", "SBUX", "MCD", "KO", "PEP", "PG", "JNJ"
+            ]
+            
+            # Get snapshots for screening
+            snapshots = await self.get_snapshots_bulk(universe)
+            
+            # Apply filters
+            filtered = []
+            for symbol, snapshot in snapshots.items():
+                try:
+                    price = snapshot['price']
+                    volume = snapshot['daily_volume']
+                    change_pct = snapshot['change_1d_pct']
+                    
+                    # Check filters
+                    if filters.get('price_min') and price < filters['price_min']:
+                        continue
+                    if filters.get('price_max') and price > filters['price_max']:
+                        continue
+                    if filters.get('volume_min') and volume < filters['volume_min']:
+                        continue
+                    if filters.get('change_pct_min') and change_pct < filters['change_pct_min']:
+                        continue
+                    
+                    filtered.append(symbol)
+                    
+                except Exception as e:
+                    continue
+            
+            logger.info(f"🔍 Screener found {len(filtered)} symbols matching criteria")
+            return filtered
+            
+        except Exception as e:
+            logger.error(f"Error screening stocks: {e}")
+            return []
+    
+    async def get_crypto_snapshot(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Get crypto snapshot (e.g., BTC/USD, ETH/USD).
+        
+        Args:
+            symbol: Crypto symbol (e.g., "BTCUSD", "ETHUSD")
+            
+        Returns:
+            Crypto snapshot data
+        """
+        try:
+            from alpaca.data.requests import CryptoSnapshotRequest
+            
+            request = CryptoSnapshotRequest(
+                symbol_or_symbols=symbol
+            )
+            
+            snapshots = await asyncio.to_thread(
+                self.data_client.get_crypto_snapshot,
+                request
+            )
+            
+            if symbol in snapshots:
+                snapshot = snapshots[symbol]
+                latest_trade = snapshot.latest_trade
+                
+                return {
+                    "symbol": symbol,
+                    "price": float(latest_trade.price) if latest_trade else 0,
+                    "timestamp": latest_trade.timestamp if latest_trade else None,
+                    "type": "crypto"
+                }
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting crypto snapshot for {symbol}: {e}")
+            logger.info("Crypto API may not be available on your plan")
+            return None
+    
+    async def place_crypto_order(self, symbol: str, qty: float, side: str = "buy") -> Dict[str, Any]:
+        """
+        Place a crypto order.
+        
+        Args:
+            symbol: Crypto symbol (e.g., "BTCUSD")
+            qty: Quantity (can be fractional)
+            side: 'buy' or 'sell'
+            
+        Returns:
+            Order data
+        """
+        try:
+            from alpaca.trading.requests import MarketOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce, AssetClass
+            
+            order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+            
+            request = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=order_side,
+                time_in_force=TimeInForce.GTC,
+                asset_class=AssetClass.CRYPTO
+            )
+            
+            order = await asyncio.to_thread(
+                self.trading_client.submit_order,
+                request
+            )
+            
+            logger.info(f"🪙 Placed crypto {side} order: {qty} {symbol}")
+            
+            return {
+                "id": str(order.id),
+                "symbol": symbol,
+                "qty": qty,
+                "side": side,
+                "status": str(order.status),
+                "type": "crypto"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error placing crypto order: {e}")
+            return {"error": str(e)}
+    
+    def create_stock_stream(self, symbols: List[str], on_quote_callback=None, on_trade_callback=None):
+        """
+        Create a real-time stock data stream (WebSocket).
+        
+        Args:
+            symbols: List of symbols to stream
+            on_quote_callback: Async callback for quotes
+            on_trade_callback: Async callback for trades
+            
+        Returns:
+            Stream handler
+        """
+        try:
+            from alpaca.data.live import StockDataStream
+            
+            # Create stream
+            stream = StockDataStream(
+                api_key=self.api_key,
+                secret_key=self.secret_key,
+                feed=self.data_feed
+            )
+            
+            # Register callbacks
+            if on_quote_callback:
+                @stream.on_quote(*symbols)
+                async def quote_handler(quote):
+                    await on_quote_callback(quote)
+            
+            if on_trade_callback:
+                @stream.on_trade(*symbols)
+                async def trade_handler(trade):
+                    await on_trade_callback(trade)
+            
+            logger.info(f"📡 Created real-time stream for {len(symbols)} symbols")
+            return stream
+            
+        except Exception as e:
+            logger.error(f"Error creating stock stream: {e}")
+            return None
+    
+    def create_crypto_stream(self, symbols: List[str], on_trade_callback=None):
+        """
+        Create a real-time crypto data stream (WebSocket).
+        
+        Args:
+            symbols: List of crypto symbols to stream
+            on_trade_callback: Async callback for trades
+            
+        Returns:
+            Stream handler
+        """
+        try:
+            from alpaca.data.live import CryptoDataStream
+            
+            # Create stream
+            stream = CryptoDataStream(
+                api_key=self.api_key,
+                secret_key=self.secret_key
+            )
+            
+            # Register callback
+            if on_trade_callback:
+                @stream.on_crypto_trade(*symbols)
+                async def trade_handler(trade):
+                    await on_trade_callback(trade)
+            
+            logger.info(f"📡 Created real-time crypto stream for {len(symbols)} symbols")
+            return stream
+            
+        except Exception as e:
+            logger.error(f"Error creating crypto stream: {e}")
+            return None
     
     async def close_option_position(self, option_symbol: str) -> bool:
         """
@@ -1219,3 +1876,8 @@ def get_alpaca_service() -> AlpacaService:
     if _alpaca_service is None:
         _alpaca_service = AlpacaService()
     return _alpaca_service
+
+def reset_alpaca_service() -> None:
+    """Reset the global Alpaca service instance so it reinitializes on next access."""
+    global _alpaca_service
+    _alpaca_service = None

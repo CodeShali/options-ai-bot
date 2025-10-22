@@ -179,7 +179,7 @@ class RiskManagerAgent(BaseAgent):
             Circuit breaker status
         """
         try:
-            # Calculate daily P/L
+            # Calculate daily P/L - ONLY from CLOSED positions (realized P&L)
             today = date.today().isoformat()
             
             # Ensure database is initialized
@@ -187,31 +187,67 @@ class RiskManagerAgent(BaseAgent):
             
             import aiosqlite
             async with aiosqlite.connect(self.db.db_path) as db:
+                # Get all trades today grouped by symbol to calculate realized P&L
                 cursor = await db.execute("""
-                    SELECT SUM(CASE 
-                        WHEN action = 'sell' THEN total_value 
-                        WHEN action = 'buy' THEN -total_value 
-                    END) as daily_pl
+                    SELECT symbol,
+                           SUM(CASE WHEN action = 'buy' THEN -total_value ELSE 0 END) as total_cost,
+                           SUM(CASE WHEN action = 'sell' THEN total_value ELSE 0 END) as total_revenue
                     FROM trades 
                     WHERE DATE(timestamp) = ?
+                    GROUP BY symbol
                 """, (today,))
-                row = await cursor.fetchone()
-                daily_pl = row[0] if row[0] else 0.0
+                rows = await cursor.fetchall()
+                
+                # Calculate realized P&L (only for closed positions where we have both buy and sell)
+                daily_pl = 0.0
+                for row in rows:
+                    symbol, total_cost, total_revenue = row
+                    # Only count if we have sells (realized P&L)
+                    if total_revenue > 0:
+                        realized_pl = total_revenue + total_cost  # cost is negative
+                        daily_pl += realized_pl
             
+            # Only count losses (negative P&L)
             self.daily_loss = -daily_pl if daily_pl < 0 else 0.0
             
             # Check if circuit breaker should trigger
             if self.daily_loss >= settings.max_daily_loss:
                 self.circuit_breaker_triggered = True
                 logger.warning(
-                    f"Circuit breaker triggered! Daily loss: ${self.daily_loss:.2f}"
+                    f"⚠️ Circuit breaker triggered! Daily loss: ${self.daily_loss:.2f}"
                 )
+                
+                # Generate detailed explanation for Tara
+                reason = f"Daily loss of ${self.daily_loss:.2f} exceeded limit of ${settings.max_daily_loss:.2f}"
+                duration = "remainder of trading day"
+                actions = [
+                    "Review today's trades to identify patterns",
+                    "Check if stop-losses are properly set",
+                    "Consider reducing position sizes tomorrow",
+                    "Wait for automatic reset at market open",
+                    "Contact administrator for manual override if needed"
+                ]
+                
+                return {
+                    "triggered": True,
+                    "daily_loss": self.daily_loss,
+                    "max_loss": settings.max_daily_loss,
+                    "remaining": 0,
+                    "reason": reason,
+                    "duration": duration,
+                    "actions": actions,
+                    "explanation": f"Circuit breaker activated to protect capital. {reason}. Trading will resume automatically tomorrow."
+                }
             
             return {
-                "triggered": self.circuit_breaker_triggered,
+                "triggered": False,
                 "daily_loss": self.daily_loss,
                 "max_loss": settings.max_daily_loss,
-                "remaining": settings.max_daily_loss - self.daily_loss
+                "remaining": settings.max_daily_loss - self.daily_loss,
+                "reason": None,
+                "duration": None,
+                "actions": [],
+                "explanation": f"Circuit breaker status: Normal. ${settings.max_daily_loss - self.daily_loss:.2f} remaining before activation."
             }
             
         except Exception as e:
@@ -237,8 +273,8 @@ class RiskManagerAgent(BaseAgent):
         try:
             symbol = analysis['symbol']
             confidence = analysis['confidence']
-            risk_level = analysis['risk_level']
-            current_price = analysis['opportunity']['current_price']
+            risk_level = analysis.get('risk_level', 'MEDIUM')  # Default to MEDIUM if not provided
+            current_price = analysis.get('current_price', analysis.get('price', 0))  # Get from analysis directly
             
             # Base position size
             base_size = settings.max_position_size

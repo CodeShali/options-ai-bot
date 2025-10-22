@@ -12,6 +12,14 @@ from services.sentiment_service import get_sentiment_service
 from services.news_service import get_news_service
 from config import settings
 
+# Import quantitative strategies
+try:
+    from strategies.strategy_manager import StrategyManager
+    STRATEGIES_AVAILABLE = True
+except ImportError:
+    STRATEGIES_AVAILABLE = False
+    logger.warning("Quantitative strategies not available")
+
 
 class StrategyAgent(BaseAgent):
     """Agent responsible for strategy analysis and signal generation."""
@@ -27,6 +35,14 @@ class StrategyAgent(BaseAgent):
         self.sentiment.set_llm(self.llm)
         self.sentiment.set_alpaca(self.alpaca)
         self.sentiment.set_news(self.news)
+        
+        # Initialize quantitative strategies
+        if STRATEGIES_AVAILABLE:
+            self.strategy_manager = StrategyManager()
+            logger.info("✅ Quantitative strategies enabled")
+        else:
+            self.strategy_manager = None
+            logger.warning("⚠️ Running without quantitative strategies")
     
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -55,7 +71,7 @@ class StrategyAgent(BaseAgent):
     
     async def analyze_opportunity(self, opportunity: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Analyze a trading opportunity using AI.
+        Analyze a trading opportunity using quantitative strategies + AI.
         
         Args:
             opportunity: Opportunity data from data pipeline
@@ -66,6 +82,19 @@ class StrategyAgent(BaseAgent):
         try:
             symbol = opportunity['symbol']
             logger.info(f"Analyzing opportunity: {symbol}")
+            
+            # STEP 1: Try quantitative strategies first
+            quant_signal = None
+            if self.strategy_manager:
+                quant_signal = await self._analyze_with_quant_strategies(opportunity)
+                
+                # If quantitative strategies give strong signal, use it
+                if quant_signal and quant_signal.get('action') in ['BUY', 'SELL']:
+                    logger.info(f"✅ Quantitative signal for {symbol}: {quant_signal['action']} ({quant_signal.get('strategy')})")
+                    return self._format_quant_signal(quant_signal, symbol)
+            
+            # STEP 2: Fall back to AI analysis if no quant signal
+            logger.info(f"Using AI analysis for {symbol} (no strong quant signal)")
             
             # Prepare market data for LLM
             market_data = {
@@ -618,8 +647,8 @@ REASONING: [5+ sentences covering trend, catalysts, and longer-term outlook]"""
         Decide whether to use stock or options based on signal strength.
         
         Args:
-            analysis: AI analysis result
-            opportunity: Opportunity data
+            analysis: AI analysis result from intelligent scanner
+            opportunity: Opportunity data (same as analysis from intelligent scanner)
             
         Returns:
             Instrument decision with details
@@ -633,47 +662,49 @@ REASONING: [5+ sentences covering trend, catalysts, and longer-term outlook]"""
                 "reasoning": "Options trading disabled"
             }
         
-        confidence = analysis['confidence']
-        recommendation = analysis['recommendation']
-        score = opportunity.get('score', 0)
+        # Get values from intelligent scanner format
+        confidence = analysis.get('confidence', 0)
+        action = analysis.get('action', '')  # BUY_STOCK, BUY_CALL, BUY_PUT
+        momentum_score = analysis.get('momentum_score', 0)  # Use momentum_score instead of score
         
-        # Strong bullish signal -> Call option
-        if recommendation == "BUY" and confidence >= 75 and score >= 75:
+        # Map intelligent scanner actions
+        # BUY_CALL -> Already wants call option
+        if action == "BUY_CALL" and confidence >= 70:
             return {
                 "instrument": "option",
                 "option_type": "call",
-                "reasoning": f"Strong bullish signal (confidence {confidence}%, score {score}) - use call option for leverage",
+                "reasoning": f"AI recommends CALL option (confidence {confidence}%, momentum {momentum_score:.0f})",
                 "confidence": confidence
             }
         
-        # Strong bearish signal -> Put option
-        if recommendation == "SELL" and confidence >= 75 and score >= 75:
+        # BUY_PUT -> Already wants put option
+        if action == "BUY_PUT" and confidence >= 70:
             return {
                 "instrument": "option",
                 "option_type": "put",
-                "reasoning": f"Strong bearish signal (confidence {confidence}%, score {score}) - use put option for leverage",
+                "reasoning": f"AI recommends PUT option (confidence {confidence}%, momentum {momentum_score:.0f})",
                 "confidence": confidence
             }
         
-        # Moderate bullish signal -> Stock (safer)
-        elif recommendation == "BUY" and confidence >= 60:
+        # BUY_STOCK -> Use stock
+        if action == "BUY_STOCK" and confidence >= 70:
             if settings.enable_stock_trading:
                 return {
                     "instrument": "stock",
-                    "reasoning": f"Moderate bullish signal (confidence {confidence}%) - use stock for lower risk",
+                    "reasoning": f"AI recommends STOCK (confidence {confidence}%, momentum {momentum_score:.0f})",
                     "confidence": confidence
                 }
             else:
                 return {
                     "instrument": "none",
-                    "reasoning": "Stock trading disabled and signal not strong enough for options"
+                    "reasoning": "Stock trading disabled"
                 }
         
         # Weak or unclear signal -> Skip
         else:
             return {
                 "instrument": "none",
-                "reasoning": f"Signal not strong enough ({recommendation}, {confidence}%)",
+                "reasoning": f"Signal not strong enough (action: {action}, confidence: {confidence}%)",
                 "confidence": confidence
             }
     
@@ -771,14 +802,89 @@ REASONING: [5+ sentences covering trend, catalysts, and longer-term outlook]"""
                 "symbol": selected['symbol'],
                 "underlying": symbol,
                 "strike": selected['strike'],
-                "expiration": best_expiration,
+                "expiration": selected['expiration'],
                 "option_type": option_type,
-                "premium": quote['price'],
                 "bid": quote['bid'],
                 "ask": quote['ask'],
-                "dte": (datetime.strptime(best_expiration, "%Y-%m-%d") - today).days
+                "mid": (quote['bid'] + quote['ask']) / 2,
+                "volume": quote.get('volume', 0),
+                "open_interest": quote.get('open_interest', 0)
             }
             
         except Exception as e:
-            logger.error(f"Error selecting options contract: {e}")
+            logger.error(f"Error selecting option contract: {e}")
             return {"error": str(e)}
+
+    async def _analyze_with_quant_strategies(self, opportunity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Analyze opportunity using quantitative strategies.
+        
+        Args:
+            opportunity: Opportunity data
+            
+        Returns:
+            Signal from quantitative strategies
+        """
+        try:
+            symbol = opportunity['symbol']
+            bars = opportunity.get('bars', [])
+            current_price = opportunity['current_price']
+            
+            if not bars or len(bars) < 30:
+                return None
+            
+            # Run all quantitative strategies
+            signal = self.strategy_manager.analyze_all(
+                symbol=symbol,
+                bars=bars,
+                current_price=current_price
+            )
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error in quantitative analysis: {e}")
+            return None
+    
+    def _format_quant_signal(self, signal: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+        """
+        Format quantitative signal into standard analysis format.
+        
+        Args:
+            signal: Signal from quantitative strategy
+            symbol: Stock symbol
+            
+        Returns:
+            Formatted analysis result
+        """
+        action = signal.get('action')
+        strategy_name = signal.get('strategy', 'Quantitative')
+        
+        # Map action to recommendation
+        if action == 'BUY':
+            recommendation = 'BUY'
+            confidence = 0.75  # High confidence for quant signals
+        elif action == 'SELL':
+            recommendation = 'SELL'
+            confidence = 0.70
+        else:
+            recommendation = 'HOLD'
+            confidence = 0.50
+        
+        return {
+            "symbol": symbol,
+            "recommendation": recommendation,
+            "confidence": confidence,
+            "risk_level": "MEDIUM",
+            "reasoning": f"{strategy_name}: {signal.get('reason', 'Quantitative signal')}",
+            "entry_price": signal.get('entry_price', 0),
+            "stop_loss": signal.get('stop_loss', 0),
+            "profit_target": signal.get('take_profit', signal.get('profit_target', 0)),
+            "strategy_type": "QUANTITATIVE",
+            "strategy_name": strategy_name,
+            "indicators": signal.get('indicators', {}),
+            "trade_type": "swing",  # Default
+            "max_hold_minutes": 14400,  # 10 days
+            "target_pct": 0.05,  # 5%
+            "stop_pct": 0.02  # 2%
+        }

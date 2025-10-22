@@ -371,30 +371,59 @@ Please provide a concise summary (3-5 sentences) covering:
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
         max_tokens: int = 2000,
-        model: Optional[str] = None
-    ) -> str:
+        model: Optional[str] = None,
+        functions: Optional[List[Dict[str, Any]]] = None,
+        function_call: Optional[str] = None
+    ):
         """
-        Simple chat completion wrapper for sentiment analysis.
+        Chat completion wrapper with optional function calling support.
         
         Args:
             messages: List of message dicts with 'role' and 'content'
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
             model: Optional model override (e.g., 'gpt-4o-mini' for cheaper calls)
+            functions: Optional list of function definitions for function calling
+            function_call: Optional function call mode ('auto', 'none', or specific function)
             
         Returns:
-            Response content as string
+            Response content as string, or dict with function_call if AI wants to call a function
         """
         try:
             use_model = model or self.model
-            response = await self.client.chat.completions.create(
-                model=use_model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+            
+            # Build request parameters
+            params = {
+                "model": use_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            }
+            
+            # Add function calling if provided
+            if functions:
+                params["tools"] = [{"type": "function", "function": f} for f in functions]
+                if function_call:
+                    params["tool_choice"] = function_call if function_call == "auto" else {"type": "function", "function": {"name": function_call}}
+            
+            response = await self.client.chat.completions.create(**params)
+            
+            message = response.choices[0].message
+            
+            # Check if AI wants to call a function
+            if message.tool_calls:
+                tool_call = message.tool_calls[0]
+                logger.debug(f"LLM wants to call function: {tool_call.function.name}")
+                return {
+                    "function_call": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments
+                    }
+                }
+            
             logger.debug(f"LLM call completed using {use_model}")
-            return response.choices[0].message.content
+            return message.content or ""
+            
         except Exception as e:
             logger.error(f"Error in chat completion: {e}")
             return ""
