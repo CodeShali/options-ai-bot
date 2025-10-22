@@ -73,14 +73,30 @@
 # Update system
 sudo apt update && sudo apt upgrade -y
 
-# Install Python 3.11 (if not already installed)
-sudo apt install python3.11 python3.11-venv python3-pip -y
+# Install git and build dependencies
+sudo apt install -y git build-essential libssl-dev zlib1g-dev \
+    libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm \
+    libncurses5-dev libncursesw5-dev xz-utils tk-dev libffi-dev \
+    liblzma-dev libopenblas-dev python3-dev gfortran
 
-# Install git
-sudo apt install git -y
+# Check if Python 3.11 is available
+python3.11 --version 2>/dev/null
 
-# Install system dependencies
-sudo apt install libatlas-base-dev libopenblas-dev -y
+# If not available, install from deadsnakes (for Debian/Ubuntu)
+if [ $? -ne 0 ]; then
+    # Add deadsnakes PPA (works on Raspberry Pi OS)
+    sudo apt install -y software-properties-common
+    sudo add-apt-repository ppa:deadsnakes/ppa -y 2>/dev/null || {
+        # If PPA doesn't work, use default Python 3
+        echo "Using system Python 3..."
+        sudo apt install -y python3 python3-venv python3-pip
+    }
+    sudo apt update
+    sudo apt install -y python3.11 python3.11-venv python3.11-dev || {
+        # Fallback to system Python 3
+        sudo apt install -y python3 python3-venv python3-pip
+    }
+fi
 ```
 
 ### **Step 2: Clone Repository**

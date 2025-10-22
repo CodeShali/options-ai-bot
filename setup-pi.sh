@@ -35,12 +35,13 @@ sudo apt upgrade -y
 # Install dependencies
 echo "📦 Installing system dependencies..."
 sudo apt install -y \
-    python3.11 \
-    python3.11-venv \
+    python3 \
+    python3-venv \
     python3-pip \
     git \
-    libatlas-base-dev \
     libopenblas-dev \
+    python3-dev \
+    build-essential \
     htop
 
 echo -e "${GREEN}✓${NC} System dependencies installed"
@@ -70,7 +71,7 @@ echo ""
 
 # Create virtual environment
 echo "🐍 Setting up Python virtual environment..."
-python3.11 -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 
 # Upgrade pip
