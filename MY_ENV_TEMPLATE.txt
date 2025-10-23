@@ -1,0 +1,178 @@
+# TARA Trading Bot - Environment Configuration Template
+# Save this file securely (Google Drive, password manager, etc.)
+# Copy these values to .env file on your Raspberry Pi
+
+========================================
+REQUIRED API KEYS (Must have these)
+========================================
+
+# 1. ALPACA TRADING API
+# Get from: https://alpaca.markets/
+ALPACA_API_KEY=
+ALPACA_SECRET_KEY=
+ALPACA_BASE_URL=https://paper-api.alpaca.markets
+
+# 2. DISCORD BOT
+# Get from: https://discord.com/developers/applications
+DISCORD_BOT_TOKEN=
+DISCORD_CHANNEL_ID=
+
+# 3. OPENAI API (for AI analysis)
+# Get from: https://platform.openai.com/api-keys
+OPENAI_API_KEY=
+
+========================================
+OPTIONAL API KEYS (Nice to have)
+========================================
+
+# 4. CLAUDE API (optional - OpenAI is fallback)
+# Get from: https://console.anthropic.com/
+ANTHROPIC_API_KEY=
+
+# 5. NEWS API (optional - for sentiment)
+# Get from: https://newsapi.org/
+NEWS_API_KEY=
+NEWS_API_ENABLED=false
+
+========================================
+TRADING SETTINGS
+========================================
+
+# Trading Mode
+TRADING_MODE=paper                    # paper or live
+AUTO_TRADING_ENABLED=false            # false = manual approval required
+
+# Risk Management
+MAX_POSITION_SIZE=5000                # Max $ per position
+MAX_DAILY_LOSS=1000                   # Circuit breaker limit
+MAX_OPEN_POSITIONS=5                  # Max concurrent positions
+PROFIT_TARGET_PCT=0.50                # 50% profit target
+STOP_LOSS_PCT=0.30                    # 30% stop loss
+
+# Market Data
+ALPACA_DATA_FEED=iex                  # iex (free) or sip (paid)
+
+========================================
+OPTIONS TRADING SETTINGS
+========================================
+
+ENABLE_OPTIONS_TRADING=true           # Enable options
+ENABLE_STOCK_TRADING=true             # Enable stocks
+OPTIONS_MAX_CONTRACTS=2               # Max contracts per trade
+OPTIONS_MAX_PREMIUM=500               # Max premium per contract ($)
+OPTIONS_MIN_DTE=30                    # Min days to expiration
+OPTIONS_MAX_DTE=45                    # Max days to expiration
+OPTIONS_CLOSE_DTE=7                   # Close when X days remain
+OPTIONS_STRIKE_PREFERENCE=OTM         # ATM, OTM, or ITM
+OPTIONS_OTM_STRIKES=1                 # Strikes away for OTM
+
+========================================
+SYSTEM SETTINGS (Usually don't change)
+========================================
+
+# Test Mode
+TEST_MODE=false                       # Bypass market hours checks
+
+# Database
+DATABASE_PATH=./data/trading.db
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FILE=./logs/trading.log
+
+# Scanning
+SCAN_INTERVAL_MINUTES=5               # Scan every 5 minutes
+
+# API Server
+API_HOST=0.0.0.0
+API_PORT=8000
+
+========================================
+HOW TO USE THIS FILE
+========================================
+
+1. Fill in your API keys above
+2. Save this file securely (Google Drive, 1Password, etc.)
+3. On Raspberry Pi, copy values to .env file:
+   
+   cd ~/trading/options-ai-bot
+   nano .env
+   
+4. Paste the values (only the lines with = signs)
+5. Save: Ctrl+X, Y, Enter
+
+========================================
+GETTING API KEYS
+========================================
+
+ALPACA (Trading):
+1. Go to https://alpaca.markets/
+2. Sign up for free account
+3. Go to "Paper Trading" section
+4. Copy API Key and Secret Key
+
+DISCORD (Bot):
+1. Go to https://discord.com/developers/applications
+2. Create "New Application"
+3. Go to "Bot" section
+4. Click "Add Bot"
+5. Copy Bot Token
+6. Enable "Message Content Intent"
+7. Invite bot to your server
+8. Copy Channel ID (right-click channel → Copy ID)
+
+OPENAI (AI):
+1. Go to https://platform.openai.com/
+2. Sign up / Login
+3. Go to API Keys section
+4. Create new secret key
+5. Copy the key (save it - can't see again!)
+
+ANTHROPIC (Optional):
+1. Go to https://console.anthropic.com/
+2. Sign up / Login
+3. Go to API Keys
+4. Create new key
+
+NEWS API (Optional):
+1. Go to https://newsapi.org/
+2. Sign up for free account
+3. Copy API key
+
+========================================
+SECURITY TIPS
+========================================
+
+✅ DO:
+- Save this file in encrypted storage (Google Drive, 1Password)
+- Use different API keys for paper vs live trading
+- Rotate keys periodically
+- Keep .env file in .gitignore (already done)
+
+❌ DON'T:
+- Share API keys with anyone
+- Commit .env to git
+- Post keys in Discord/forums
+- Use live trading keys for testing
+
+========================================
+RECOMMENDED SETTINGS FOR BEGINNERS
+========================================
+
+TRADING_MODE=paper                    # Start with paper trading!
+AUTO_TRADING_ENABLED=false            # Manual approval first
+MAX_POSITION_SIZE=1000                # Start small
+MAX_DAILY_LOSS=500                    # Conservative limit
+MAX_OPEN_POSITIONS=3                  # Fewer positions to start
+ENABLE_OPTIONS_TRADING=false          # Master stocks first
+ENABLE_STOCK_TRADING=true             # Stocks only to start
+
+========================================
+NOTES
+========================================
+
+Date Created: October 22, 2025
+For: Raspberry Pi 4 Deployment
+Repository: https://github.com/CodeShali/options-ai-bot
+
+Last Updated: _______________

@@ -109,6 +109,22 @@ class TradingScheduler:
     async def _monitor_positions_job(self):
         """Job to monitor positions and execute exits."""
         try:
+            # Check if market is open - only monitor during trading hours
+            from datetime import datetime
+            now = datetime.now()
+            
+            # Skip on weekends
+            if now.weekday() >= 5:
+                logger.debug("Market closed (weekend), skipping position monitoring")
+                return
+            
+            # Skip outside market hours (9:30 AM - 4:00 PM ET)
+            # Note: We monitor slightly after close (until 4:30 PM) to handle end-of-day positions
+            market_hour = now.hour
+            if market_hour < 9 or market_hour >= 17:
+                logger.debug(f"Market closed (hour: {market_hour}), skipping position monitoring")
+                return
+            
             logger.debug("Running scheduled monitor positions job")
             
             result = await self.orchestrator.monitor_and_exit()
@@ -124,11 +140,33 @@ class TradingScheduler:
             
             await self.orchestrator.risk_manager.reset_circuit_breaker()
             
-            # Send notification
+            # Send market open notification
             if self.orchestrator.discord_bot:
-                await self.orchestrator.discord_bot.send_notification(
-                    "🔄 New trading day - circuit breaker reset"
+                from datetime import datetime
+                import discord
+                
+                embed = discord.Embed(
+                    title="🔔 Market Open",
+                    description="New trading day started",
+                    color=discord.Color.green(),
+                    timestamp=datetime.now()
                 )
+                
+                embed.add_field(
+                    name="🔄 Circuit Breaker",
+                    value="Reset for new day",
+                    inline=True
+                )
+                
+                embed.add_field(
+                    name="📊 Status",
+                    value="Monitoring active",
+                    inline=True
+                )
+                
+                embed.set_footer(text="TARA will scan every 5 minutes during market hours")
+                
+                await self.orchestrator.discord_bot.send_notification("", embed=embed)
             
         except Exception as e:
             logger.error(f"Error resetting circuit breaker: {e}")

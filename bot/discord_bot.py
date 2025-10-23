@@ -93,6 +93,9 @@ class TradingBot(commands.Bot):
                 name="📊 Market Opportunities"
             )
         )
+        
+        # Send startup notification to Discord
+        await self.send_startup_notification()
     
     async def on_reaction_add(self, reaction, user):
         """Handle reaction additions for NLP confirmations."""
@@ -197,6 +200,91 @@ class TradingBot(commands.Bot):
         finally:
             # Ensure slash commands still work
             await self.process_commands(message)
+    
+    async def send_startup_notification(self):
+        """Send startup notification with market status."""
+        try:
+            from services.market_hours_service import MarketHoursService
+            from datetime import datetime
+            import platform
+            
+            market_service = MarketHoursService()
+            market_status = market_service.get_current_market_status()
+            
+            # Determine emoji based on market status
+            status_emoji = {
+                "regular": "🟢",
+                "pre_market": "🟡",
+                "after_hours": "🟠",
+                "closed": "🔴"
+            }.get(market_status.get("session", "closed"), "⚪")
+            
+            # Build startup message
+            embed = discord.Embed(
+                title="🚀 TARA Trading Bot Started",
+                description="System initialized and ready",
+                color=discord.Color.green(),
+                timestamp=datetime.now()
+            )
+            
+            # System info
+            embed.add_field(
+                name="💻 System",
+                value=f"Platform: {platform.system()}\nMode: {settings.trading_mode.upper()}",
+                inline=True
+            )
+            
+            # Market status
+            market_desc = f"{status_emoji} {market_status.get('session_description', 'Unknown')}"
+            if market_status.get('can_trade'):
+                market_desc += "\n✅ Trading Active"
+            else:
+                market_desc += "\n⏸️ Trading Paused"
+            
+            embed.add_field(
+                name="📊 Market Status",
+                value=market_desc,
+                inline=True
+            )
+            
+            # Next session info
+            if market_status.get('next_session_time'):
+                next_info = f"{market_status.get('next_session', 'N/A')}\n"
+                next_info += f"at {market_status.get('next_session_time', 'N/A')}"
+                if market_status.get('time_until_next'):
+                    next_info += f"\n⏱️ in {market_status.get('time_until_next')}"
+                embed.add_field(
+                    name="⏭️ Next Session",
+                    value=next_info,
+                    inline=False
+                )
+            
+            # Features status
+            features = []
+            if settings.auto_trading_enabled:
+                features.append("✅ Auto-trading enabled")
+            else:
+                features.append("⏸️ Manual approval required")
+            
+            if settings.enable_options_trading:
+                features.append("📈 Options trading enabled")
+            if settings.enable_stock_trading:
+                features.append("📊 Stock trading enabled")
+            
+            embed.add_field(
+                name="⚙️ Features",
+                value="\n".join(features),
+                inline=False
+            )
+            
+            # Footer
+            embed.set_footer(text=f"TARA v1.0 | {settings.trading_mode.upper()} mode")
+            
+            await self.send_notification("", embed=embed)
+            logger.info("Startup notification sent to Discord")
+            
+        except Exception as e:
+            logger.error(f"Error sending startup notification: {e}")
     
     async def send_notification(self, message: str, embed: Optional[discord.Embed] = None, symbol: Optional[str] = None):
         """
