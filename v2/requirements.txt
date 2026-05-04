@@ -1,0 +1,28 @@
+# Core AI
+anthropic>=0.49.0
+
+# Broker / market data
+alpaca-py>=0.34.0
+
+# Telegram bot
+python-telegram-bot[job-queue]>=21.0
+
+# Streamlit dashboard
+streamlit>=1.35.0
+streamlit-autorefresh>=1.0.1
+plotly>=5.22.0
+
+# Scheduling
+APScheduler>=3.10.4
+
+# Data
+pandas>=2.2.0
+numpy>=1.26.0
+pandas-ta>=0.3.14b
+
+# Config
+pydantic-settings>=2.3.0
+python-dotenv>=1.0.0
+
+# Logging
+loguru>=0.7.2
