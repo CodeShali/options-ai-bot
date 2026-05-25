@@ -1,17 +1,19 @@
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import ConfigDict
 from pathlib import Path
 
 
 class Settings(BaseSettings):
-    anthropic_api_key: str = Field("", env="ANTHROPIC_API_KEY")
-    tavily_api_key: str = Field("", env="TAVILY_API_KEY")
-    serpapi_api_key: str = Field("", env="SERPAPI_API_KEY")
-    stack_exchange_api_key: str = Field("", env="STACK_EXCHANGE_API_KEY")
+    model_config = ConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    log_level: str = Field("INFO", env="LOG_LEVEL")
-    max_concurrent_requests: int = Field(5, env="MAX_CONCURRENT_REQUESTS")
-    quality_score_threshold: float = Field(0.7, env="QUALITY_SCORE_THRESHOLD")
+    anthropic_api_key: str = ""
+    tavily_api_key: str = ""
+    serpapi_api_key: str = ""
+    stack_exchange_api_key: str = ""
+
+    log_level: str = "INFO"
+    max_concurrent_requests: int = 5
+    quality_score_threshold: float = 0.7
 
     claude_model: str = "claude-sonnet-4-5"
     max_retries: int = 5
@@ -30,10 +32,6 @@ class Settings(BaseSettings):
 
     min_output_length: int = 100
     max_output_length: int = 4000
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 
 settings = Settings()

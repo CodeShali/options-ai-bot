@@ -1,0 +1,187 @@
+domains:
+  ldap:
+    description: "Lightweight Directory Access Protocol"
+    subtopics:
+      - filter_syntax
+      - dn_handling
+      - schema
+      - operations
+      - security
+      - operational
+      - vendor_extensions
+
+  saml:
+    description: "Security Assertion Markup Language 2.0"
+    subtopics:
+      - assertions
+      - bindings
+      - profiles
+      - encryption_signing
+      - sp_initiated_flow
+      - idp_initiated_flow
+      - attribute_mapping
+      - session_management
+
+  oauth:
+    description: "OAuth 2.0 and extensions"
+    subtopics:
+      - authorization_code
+      - client_credentials
+      - device_flow
+      - pkce
+      - token_introspection
+      - token_revocation
+      - jwt_tokens
+      - dpop
+      - par
+      - jar
+      - token_exchange
+
+  oidc:
+    description: "OpenID Connect"
+    subtopics:
+      - id_tokens
+      - userinfo_endpoint
+      - discovery
+      - dynamic_client_registration
+      - session_management
+      - hybrid_flow
+      - implicit_flow
+
+  scim:
+    description: "System for Cross-domain Identity Management"
+    subtopics:
+      - resource_types
+      - schemas
+      - patch_operations
+      - bulk_operations
+      - filtering
+      - sorting
+      - etag
+
+  kerberos:
+    description: "Kerberos Network Authentication Protocol"
+    subtopics:
+      - ticket_granting
+      - kdc_operations
+      - delegation
+      - s4u_extensions
+      - golden_silver_tickets
+      - cross_realm
+      - encryption_types
+
+  webauthn_fido:
+    description: "WebAuthn / FIDO2"
+    subtopics:
+      - registration_ceremony
+      - authentication_ceremony
+      - attestation
+      - authenticator_types
+      - resident_keys
+      - user_verification
+
+  active_directory:
+    description: "Microsoft Active Directory"
+    subtopics:
+      - schema
+      - replication
+      - fsmo_roles
+      - trust_relationships
+      - group_policy
+      - kerberos_ad
+      - ldap_ad
+      - dns_integration
+
+  azure_ad_entra:
+    description: "Microsoft Azure AD / Entra ID"
+    subtopics:
+      - conditional_access
+      - pim
+      - identity_protection
+      - external_identities
+      - app_registrations
+      - managed_identities
+      - entra_id_governance
+
+  aws_iam:
+    description: "AWS Identity and Access Management"
+    subtopics:
+      - policies
+      - roles
+      - permission_boundaries
+      - service_control_policies
+      - identity_center
+      - sts
+      - resource_based_policies
+
+  okta:
+    description: "Okta Identity Platform"
+    subtopics:
+      - lifecycle_management
+      - workflows
+      - policies
+      - api_access_management
+      - event_hooks
+      - inline_hooks
+      - universal_directory
+
+  pam:
+    description: "Privileged Access Management"
+    subtopics:
+      - password_vaulting
+      - session_recording
+      - just_in_time
+      - least_privilege
+      - secrets_rotation
+      - ssh_key_management
+
+  nhi:
+    description: "Non-Human Identity"
+    subtopics:
+      - service_accounts
+      - api_keys
+      - oauth_clients
+      - machine_identities
+      - secrets_management
+      - certificate_based
+      - workload_identity
+
+  zero_trust:
+    description: "Zero Trust Architecture"
+    subtopics:
+      - never_trust_verify
+      - micro_segmentation
+      - continuous_validation
+      - device_trust
+      - network_access
+
+  compliance:
+    description: "IAM Compliance and Governance"
+    subtopics:
+      - access_certification
+      - segregation_of_duties
+      - audit_logging
+      - gdpr_ccpa
+      - sox_compliance
+      - hipaa_iam
+      - nist_controls
+
+task_types:
+  - explain_concept
+  - answer_question
+  - diagnose_problem
+  - provide_solution
+  - generate_query
+  - assess_risk
+  - review_access
+  - map_compliance
+  - audit_config
+  - parse_assertion
+  - explain_flow
+  - remediate
+
+difficulty_levels:
+  - beginner
+  - intermediate
+  - advanced
+  - expert
