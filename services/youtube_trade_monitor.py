@@ -137,14 +137,20 @@ class YouTubeTradeMonitor:
     # Public API
     # ──────────────────────────────────────────────────────────────────────────
 
-    async def start(self, youtube_url: str) -> dict:
-        """Begin monitoring the given YouTube URL."""
+    async def start(self, youtube_url: str, start_offset: int = 0) -> dict:
+        """Begin monitoring the given YouTube URL.
+
+        Args:
+            youtube_url: YouTube video or live stream URL
+            start_offset: Start processing from this many seconds into the video (0 = beginning)
+        """
         if self.state not in ("idle", "error"):
             return {"success": False, "message": f"Monitor is already {self.state}"}
 
         self.youtube_url = youtube_url
         self.state = "starting"
         self._stop_event.clear()
+        self._start_offset = start_offset
 
         try:
             info = await self._get_stream_info(youtube_url)
@@ -164,9 +170,10 @@ class YouTubeTradeMonitor:
         self._monitor_task = asyncio.create_task(self._monitoring_loop())
 
         kind = "live stream" if self._is_live else "video"
+        offset_str = f" from {start_offset//3600:02d}:{(start_offset%3600)//60:02d}:{start_offset%60:02d}" if start_offset else ""
         return {
             "success": True,
-            "message": f"Monitoring started ({kind}): {self._stream_title}",
+            "message": f"Monitoring started ({kind}){offset_str}: {self._stream_title}",
             "is_live": self._is_live,
             "title": self._stream_title,
         }
@@ -629,7 +636,9 @@ class YouTubeTradeMonitor:
     async def _monitoring_loop(self):
         chunk_sec = settings.youtube_chunk_seconds
         step_sec = settings.youtube_step_seconds
-        offset = 0
+        offset = getattr(self, "_start_offset", 0)
+        if offset:
+            logger.info(f"Starting from offset {offset//3600:02d}:{(offset%3600)//60:02d}:{offset%60:02d}")
         consecutive_failures = 0
         max_failures = 5
 

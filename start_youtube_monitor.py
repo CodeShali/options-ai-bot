@@ -39,6 +39,37 @@ from config import settings
 from services.youtube_trade_monitor import YouTubeTradeMonitor, set_monitor
 
 
+def parse_timestamp(ts: str) -> int:
+    """Convert a timestamp string to seconds.
+    Accepts: 5400, 1:30:00, 90:00, 1h30m, 30m
+    """
+    ts = ts.strip()
+    # Plain seconds
+    if ts.isdigit():
+        return int(ts)
+    # HH:MM:SS or MM:SS
+    if ":" in ts:
+        parts = ts.split(":")
+        parts = [int(p) for p in parts]
+        if len(parts) == 3:
+            return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        if len(parts) == 2:
+            return parts[0] * 60 + parts[1]
+    # 1h30m / 30m / 90s style
+    import re
+    total = 0
+    for val, unit in re.findall(r"(\d+)([hms])", ts.lower()):
+        if unit == "h":
+            total += int(val) * 3600
+        elif unit == "m":
+            total += int(val) * 60
+        elif unit == "s":
+            total += int(val)
+    if total:
+        return total
+    raise ValueError(f"Cannot parse timestamp: {ts}")
+
+
 async def print_stats_loop(monitor: YouTubeTradeMonitor, stop_event: asyncio.Event):
     while not stop_event.is_set():
         try:
@@ -58,7 +89,7 @@ async def print_stats_loop(monitor: YouTubeTradeMonitor, stop_event: asyncio.Eve
         )
 
 
-async def run_monitor(youtube_url: str, webhook_url: str):
+async def run_monitor(youtube_url: str, webhook_url: str, start_offset: int = 0):
     stop_event = asyncio.Event()
     monitor = YouTubeTradeMonitor(webhook_url=webhook_url)
     set_monitor(monitor)
@@ -87,7 +118,7 @@ async def run_monitor(youtube_url: str, webhook_url: str):
         logger.error("Check your DISCORD_WEBHOOK_URL in .env")
         return
 
-    result = await monitor.start(youtube_url)
+    result = await monitor.start(youtube_url, start_offset=start_offset)
     if not result["success"]:
         logger.error(f"Monitor failed to start: {result['message']}")
         return
@@ -149,6 +180,11 @@ Examples:
         default=None,
         help="Whisper model (default: base.en). tiny.en=fastest, small.en=most accurate",
     )
+    parser.add_argument(
+        "--start",
+        default=None,
+        help="Start from this timestamp, e.g. 1:30:00 or 90:00 or 5400 or 1h30m",
+    )
     args = parser.parse_args()
 
     if "youtube.com" not in args.url and "youtu.be" not in args.url:
@@ -163,6 +199,14 @@ Examples:
     if args.model:
         settings.youtube_whisper_model = args.model
 
+    start_offset = 0
+    if args.start:
+        try:
+            start_offset = parse_timestamp(args.start)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
     logger.remove()
     logger.add(
         sys.stdout,
@@ -175,13 +219,16 @@ Examples:
     logger.info("🎬  YouTube Trade Monitor  →  Discord Alerts")
     logger.info("━" * 60)
     logger.info(f"URL:      {args.url}")
+    if start_offset:
+        h, m, s = start_offset // 3600, (start_offset % 3600) // 60, start_offset % 60
+        logger.info(f"Start:    {h:02d}:{m:02d}:{s:02d} ({start_offset}s into video)")
     logger.info(f"Whisper:  {settings.youtube_whisper_model} (local, free)")
     logger.info(f"AI:       Claude Haiku (audio + video)")
     logger.info(f"Discord:  Webhook")
     logger.info(f"Est cost: ~$0.10/hr")
     logger.info("━" * 60)
 
-    asyncio.run(run_monitor(args.url, webhook_url))
+    asyncio.run(run_monitor(args.url, webhook_url, start_offset))
 
 
 if __name__ == "__main__":
