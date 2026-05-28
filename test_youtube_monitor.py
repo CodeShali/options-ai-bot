@@ -136,7 +136,11 @@ async def test_discord():
             logger.error("  ❌ DISCORD_WEBHOOK_URL not set in .env")
             return False
 
-        async with aiohttp.ClientSession() as session:
+        import ssl
+        import certifi
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+        async with aiohttp.ClientSession(connector=connector) as session:
             webhook = discord.Webhook.from_url(webhook_url, session=session)
             await webhook.send("✅ YouTube Trade Monitor test — connection working!")
 

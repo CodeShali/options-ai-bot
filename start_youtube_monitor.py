@@ -64,10 +64,17 @@ async def run_monitor(youtube_url: str, webhook_url: str):
     set_monitor(monitor)
 
     # Send start notification via webhook
+    import ssl
+    import certifi
     import aiohttp
     import discord
+
+    def _make_session():
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        return aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_ctx))
+
     try:
-        async with aiohttp.ClientSession() as session:
+        async with _make_session() as session:
             webhook = discord.Webhook.from_url(webhook_url, session=session)
             await webhook.send(
                 f"📡 **YouTube Trade Monitor started**\n"

@@ -603,8 +603,11 @@ class YouTubeTradeMonitor:
             embed = self._build_embed(trade)
 
             if self.webhook_url:
-                # Send via webhook (no bot needed)
-                async with aiohttp.ClientSession() as session:
+                import ssl
+                import certifi
+                ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+                connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+                async with aiohttp.ClientSession(connector=connector) as session:
                     webhook = discord.Webhook.from_url(self.webhook_url, session=session)
                     await webhook.send(embed=embed)
             elif self.discord_channel:
