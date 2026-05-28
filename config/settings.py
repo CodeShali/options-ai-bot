@@ -175,6 +175,36 @@ class Settings(BaseSettings):
     # FastAPI Configuration
     api_host: str = Field(default="0.0.0.0", description="FastAPI host")
     api_port: int = Field(default=8000, description="FastAPI port")
+
+    # YouTube Trade Monitor
+    youtube_monitor_channel_id: str = Field(
+        default="",
+        description="Discord channel ID for YouTube trade alerts (defaults to discord_channel_id)"
+    )
+    youtube_whisper_model: str = Field(
+        default="base.en",
+        description="faster-whisper model: tiny.en (fastest), base.en (recommended), small.en (most accurate)"
+    )
+    youtube_chunk_seconds: int = Field(
+        default=60,
+        description="Audio capture duration per chunk in seconds"
+    )
+    youtube_step_seconds: int = Field(
+        default=40,
+        description="Seconds to advance between monitoring iterations (chunk - step = overlap)"
+    )
+    youtube_frame_interval: int = Field(
+        default=15,
+        description="Capture one video frame every N seconds"
+    )
+    youtube_dedup_minutes: int = Field(
+        default=5,
+        description="Suppress duplicate trade alerts within this many minutes"
+    )
+    youtube_min_confidence: float = Field(
+        default=0.35,
+        description="Minimum Claude confidence score to emit a trade alert (0.0-1.0)"
+    )
     
     @validator("trading_mode")
     def validate_trading_mode(cls, v):
