@@ -239,8 +239,9 @@ class YouTubeTradeMonitor:
         return args
 
     async def _get_stream_info(self, url: str) -> dict:
-        """Use yt-dlp to retrieve stream metadata and best stream URLs."""
-        meta_cmd = self._ytdlp_base() + ["--dump-json", "-f", "bestaudio/best", url]
+        """Use yt-dlp to retrieve stream metadata and stream URL."""
+        # Step 1: Get metadata (no format filter — just info)
+        meta_cmd = self._ytdlp_base() + ["--dump-json", url]
         proc = await asyncio.create_subprocess_exec(
             *meta_cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -253,37 +254,26 @@ class YouTubeTradeMonitor:
         info = json.loads(stdout.decode())
         is_live = bool(info.get("is_live"))
 
-        # Best audio URL
-        audio_url = info.get("url", "")
-        if not audio_url:
-            for fmt in reversed(info.get("formats", [])):
-                if fmt.get("acodec") not in (None, "none") and fmt.get("url"):
-                    audio_url = fmt["url"]
-                    break
+        # Step 2: Get a single best stream URL using --get-url (no format restriction)
+        url_cmd = self._ytdlp_base() + ["--get-url", url]
+        proc2 = await asyncio.create_subprocess_exec(
+            *url_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout2, stderr2 = await asyncio.wait_for(proc2.communicate(), timeout=60)
+        if proc2.returncode != 0:
+            raise RuntimeError(stderr2.decode()[:500])
 
-        # Best video URL — try progressively looser formats
-        video_url = audio_url
-        for fmt in ["best[height<=720]", "best[height<=1080]", "best", "bestvideo+bestaudio/best"]:
-            vid_cmd = self._ytdlp_base() + ["--get-url", "-f", fmt, url]
-            try:
-                proc2 = await asyncio.create_subprocess_exec(
-                    *vid_cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                out2, _ = await asyncio.wait_for(proc2.communicate(), timeout=60)
-                if proc2.returncode == 0 and out2.strip():
-                    video_url = out2.decode().strip().splitlines()[0]
-                    logger.debug(f"Video format resolved: {fmt}")
-                    break
-            except Exception as e:
-                logger.debug(f"Format {fmt} failed: {e}")
+        # --get-url may return multiple lines (video + audio); take the first
+        stream_url = stdout2.decode().strip().splitlines()[0]
+        logger.debug(f"Stream URL resolved for: {info.get('title', url)}")
 
         return {
             "is_live": is_live,
             "duration": info.get("duration"),
-            "audio_url": audio_url,
-            "video_url": video_url,
+            "audio_url": stream_url,
+            "video_url": stream_url,   # same URL works for both ffmpeg audio and frame extraction
             "title": info.get("title", ""),
         }
 
