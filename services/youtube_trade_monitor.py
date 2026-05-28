@@ -750,17 +750,19 @@ class YouTubeTradeMonitor:
 
             offset += step_sec
 
-            # Sleep until next iteration
-            elapsed = asyncio.get_event_loop().time() - t_start
-            sleep_time = max(0.0, step_sec - elapsed)
-            if sleep_time > 0:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.shield(self._stop_event.wait()), timeout=sleep_time
-                    )
-                    break  # stop event was set
-                except asyncio.TimeoutError:
-                    pass
+            # For live streams: wait to maintain real-time cadence
+            # For recorded videos: process immediately, no need to wait
+            if self._is_live:
+                elapsed = asyncio.get_event_loop().time() - t_start
+                sleep_time = max(0.0, step_sec - elapsed)
+                if sleep_time > 0:
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(self._stop_event.wait()), timeout=sleep_time
+                        )
+                        break  # stop event was set
+                    except asyncio.TimeoutError:
+                        pass
 
         self.state = "idle"
         logger.info(f"Monitor stopped. {self.stats.to_dict()}")
