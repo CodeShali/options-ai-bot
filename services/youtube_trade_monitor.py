@@ -240,7 +240,7 @@ class YouTubeTradeMonitor:
 
     async def _get_stream_info(self, url: str) -> dict:
         """Use yt-dlp to retrieve stream metadata and best stream URLs."""
-        meta_cmd = self._ytdlp_base() + ["--dump-json", url]
+        meta_cmd = self._ytdlp_base() + ["--dump-json", "-f", "bestaudio/best", url]
         proc = await asyncio.create_subprocess_exec(
             *meta_cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -261,22 +261,23 @@ class YouTubeTradeMonitor:
                     audio_url = fmt["url"]
                     break
 
-        # Best video URL (720p or lower to keep ffmpeg fast)
+        # Best video URL — try progressively looser formats
         video_url = audio_url
-        vid_cmd = self._ytdlp_base() + [
-            "--get-url", "-f", "best[height<=720]/bestvideo[height<=720]/best", url,
-        ]
-        try:
-            proc2 = await asyncio.create_subprocess_exec(
-                *vid_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            out2, _ = await asyncio.wait_for(proc2.communicate(), timeout=60)
-            if proc2.returncode == 0 and out2.strip():
-                video_url = out2.decode().strip()
-        except Exception as e:
-            logger.debug(f"Video URL resolution fell back to audio stream: {e}")
+        for fmt in ["best[height<=720]", "best[height<=1080]", "best", "bestvideo+bestaudio/best"]:
+            vid_cmd = self._ytdlp_base() + ["--get-url", "-f", fmt, url]
+            try:
+                proc2 = await asyncio.create_subprocess_exec(
+                    *vid_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                out2, _ = await asyncio.wait_for(proc2.communicate(), timeout=60)
+                if proc2.returncode == 0 and out2.strip():
+                    video_url = out2.decode().strip().splitlines()[0]
+                    logger.debug(f"Video format resolved: {fmt}")
+                    break
+            except Exception as e:
+                logger.debug(f"Format {fmt} failed: {e}")
 
         return {
             "is_live": is_live,
