@@ -8,17 +8,32 @@ Usage:
 Monitors a YouTube video or live stream for trade executions.
 Sends Discord alerts to the configured channel when trades are detected.
 
-Requirements:
-    - ANTHROPIC_API_KEY in .env (for Claude Haiku trade detection)
-    - DISCORD_BOT_TOKEN in .env
-    - DISCORD_CHANNEL_ID or YOUTUBE_MONITOR_CHANNEL_ID in .env
-    - System: ffmpeg (apt install ffmpeg / brew install ffmpeg)
-    - Python: yt-dlp, faster-whisper (pip install yt-dlp faster-whisper)
+Required .env variables (ONLY these 3 are needed):
+    ANTHROPIC_API_KEY=sk-ant-...
+    DISCORD_BOT_TOKEN=your_bot_token
+    DISCORD_CHANNEL_ID=your_channel_id
+
+System requirements:
+    ffmpeg  (brew install ffmpeg  /  apt install ffmpeg)
+    pip install yt-dlp faster-whisper
 """
+import os
+import sys
+
+# Load .env FIRST, then fill in dummy values for unused required fields
+# so the shared config/settings.py validation passes without needing
+# Alpaca / OpenAI keys that the YouTube monitor doesn't use.
+from dotenv import load_dotenv
+load_dotenv()
+
+os.environ.setdefault("ALPACA_API_KEY", "not-used")
+os.environ.setdefault("ALPACA_SECRET_KEY", "not-used")
+os.environ.setdefault("OPENAI_API_KEY", "not-used")
+
+# Now it's safe to import the rest
 import argparse
 import asyncio
 import signal
-import sys
 
 import discord
 from loguru import logger
@@ -59,7 +74,6 @@ async def run_monitor(youtube_url: str, channel_id: int):
         nonlocal monitor
         logger.info(f"Discord connected as {client.user}")
 
-        # Fetch the target channel
         channel = client.get_channel(channel_id)
         if channel is None:
             try:
@@ -72,7 +86,6 @@ async def run_monitor(youtube_url: str, channel_id: int):
 
         logger.info(f"Discord channel: #{getattr(channel, 'name', channel_id)}")
 
-        # Create and start monitor
         monitor = YouTubeTradeMonitor(discord_channel=channel)
         set_monitor(monitor)
 
@@ -90,18 +103,15 @@ async def run_monitor(youtube_url: str, channel_id: int):
         logger.info("Monitoring for trades... Press Ctrl+C to stop.")
         logger.info("━" * 60)
 
-        # Send start notification to Discord
         await channel.send(
             f"📡 **YouTube Trade Monitor started**\n"
             f"Type: `{kind}` | Model: `{settings.youtube_whisper_model}`\n"
             f"Stream: {youtube_url}"
         )
 
-        # Background stats printer
         asyncio.create_task(print_stats_loop(monitor, stop_event))
 
     async def shutdown():
-        """Graceful shutdown: stop monitor, notify Discord, close client."""
         if monitor:
             logger.info("Stopping monitor…")
             result = await monitor.stop()
@@ -122,7 +132,6 @@ async def run_monitor(youtube_url: str, channel_id: int):
         if not client.is_closed():
             await client.close()
 
-    # Register signal handlers for Ctrl+C / SIGTERM
     loop = asyncio.get_event_loop()
 
     def handle_signal():
@@ -134,7 +143,7 @@ async def run_monitor(youtube_url: str, channel_id: int):
         try:
             loop.add_signal_handler(sig, handle_signal)
         except NotImplementedError:
-            pass  # Windows doesn't support add_signal_handler for all signals
+            pass
 
     try:
         await client.start(settings.discord_bot_token)
@@ -163,7 +172,7 @@ Examples:
         "--channel",
         type=int,
         default=None,
-        help="Discord channel ID (overrides YOUTUBE_MONITOR_CHANNEL_ID / DISCORD_CHANNEL_ID from .env)",
+        help="Discord channel ID (overrides DISCORD_CHANNEL_ID from .env)",
     )
     parser.add_argument(
         "--model",
@@ -173,16 +182,13 @@ Examples:
     )
     args = parser.parse_args()
 
-    # Validate URL
     if "youtube.com" not in args.url and "youtu.be" not in args.url:
         print("Error: URL must be a YouTube link (youtube.com or youtu.be)", file=sys.stderr)
         sys.exit(1)
 
-    # Override model if specified
     if args.model:
         settings.youtube_whisper_model = args.model
 
-    # Resolve channel ID
     channel_id = args.channel
     if not channel_id:
         raw = settings.youtube_monitor_channel_id or settings.discord_channel_id
@@ -190,13 +196,12 @@ Examples:
             channel_id = int(raw)
         except (TypeError, ValueError):
             print(
-                "Error: No valid channel ID. Set YOUTUBE_MONITOR_CHANNEL_ID or "
-                "DISCORD_CHANNEL_ID in your .env file, or pass --channel.",
+                "Error: No channel ID found.\n"
+                "Set DISCORD_CHANNEL_ID in your .env file, or pass --channel <id>.",
                 file=sys.stderr,
             )
             sys.exit(1)
 
-    # Configure logging
     logger.remove()
     logger.add(
         sys.stdout,
@@ -205,17 +210,16 @@ Examples:
         colorize=True,
     )
 
-    # Banner
     logger.info("━" * 60)
     logger.info("🎬  YouTube Trade Monitor  →  Discord Alerts")
     logger.info("━" * 60)
-    logger.info(f"URL:     {args.url}")
-    logger.info(f"Channel: {channel_id}")
-    logger.info(f"Whisper: {settings.youtube_whisper_model} (local, free)")
-    logger.info(f"AI:      Claude Haiku (text + vision)")
+    logger.info(f"URL:      {args.url}")
+    logger.info(f"Channel:  {channel_id}")
+    logger.info(f"Whisper:  {settings.youtube_whisper_model} (local, free)")
+    logger.info(f"AI:       Claude Haiku (audio + video)")
     logger.info(f"Est cost: ~$0.10/hr")
     logger.info("━" * 60)
-    logger.info("Whisper model will be downloaded on first run (~145MB for base.en)")
+    logger.info("Whisper model downloads ~145MB on first run, then cached.")
     logger.info("━" * 60)
 
     asyncio.run(run_monitor(args.url, channel_id))
