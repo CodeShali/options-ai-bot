@@ -25,19 +25,32 @@ os.environ.setdefault("DISCORD_CHANNEL_ID", "0")
 import anthropic
 
 
-SYSTEM_PROMPT = """You analyze transcripts from trading live streams.
-Your job is to identify the EXACT moments when the trader actually executes a trade (entry or exit).
+SYSTEM_PROMPT = """You are an expert at identifying LIVE trade executions in trading stream transcripts.
 
-For each real trade execution found, return:
-- timestamp (HH:MM:SS)
-- action: BUY or SELL
-- instrument: what they traded (NQ, ES, AAPL, etc.)
-- what they said (verbatim quote)
+ONLY flag a trade when the trader EXPLICITLY executes RIGHT NOW. Look for:
+- "I'm buying / selling [X] right here"
+- "Going long / short [X]"
+- "I just got filled / filled at [price]"
+- "I'm in [X]" / "I'm out of [X]"
+- "Bought / Sold [X]"
+- "Taking profits" / "Stopped out"
 
-Ignore: analysis, commentary, education, watching levels, hypotheticals.
-Only include confirmed executions where the trader is clearly entering or exiting a real position RIGHT NOW.
+DO NOT flag:
+- Watching, waiting, looking at levels
+- "I would buy if..." / "when price does X..."
+- Past trade reviews or hypothetical setups
+- Any sentence with: if, when, could, should, might, watching, waiting
 
-Return as a clean numbered list."""
+Be VERY strict. Only include executions you are 90%+ certain are real live entries or exits.
+
+For each confirmed trade return a numbered list with:
+  [TIMESTAMP] ACTION SYMBOL — "verbatim quote"
+
+Example:
+  1. [00:12:34] BUY NQ — "I'm going long NQ right here at 21450"
+  2. [00:14:21] SELL NQ — "taking profits, I'm out"
+
+If no confirmed executions exist, say: NO TRADES FOUND"""
 
 
 def get_transcript(video_id: str) -> list:
@@ -65,7 +78,7 @@ def seconds_to_ts(s: int) -> str:
 
 def analyze_chunk_with_claude(client: anthropic.Anthropic, chunk_text: str) -> str:
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=1024,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": f"Transcript segment:\n\n{chunk_text}"}]
@@ -123,13 +136,18 @@ def find_trade_timestamps(url: str):
 
         result = analyze_chunk_with_claude(client, chunk_text)
 
-        # Check if Claude found anything real
-        if any(word in result.lower() for word in ["buy", "sell", "long", "short", "no trade", "no execution", "none found", "nothing"]):
-            if "no trade" not in result.lower() and "none" not in result.lower() and "no execution" not in result.lower() and len(result.strip()) > 20:
-                print("✅ trades found!")
-                all_results.append((ts_range, result))
-            else:
-                print("— no trades")
+        no_trade = (
+            "no trade" in result.lower()
+            or "no trades" in result.lower()
+            or "no execution" in result.lower()
+            or "none found" in result.lower()
+            or "no confirmed" in result.lower()
+            or result.strip().upper() == "NO TRADES FOUND"
+            or len(result.strip()) < 15
+        )
+        if not no_trade:
+            print("✅ trades found!")
+            all_results.append((ts_range, result))
         else:
             print("— no trades")
 

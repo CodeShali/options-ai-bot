@@ -203,7 +203,15 @@ class Settings(BaseSettings):
     )
     youtube_min_confidence: float = Field(
         default=0.35,
-        description="Minimum Claude confidence score to emit a trade alert (0.0-1.0)"
+        description="Legacy: minimum confidence (use single/combined below)"
+    )
+    youtube_min_confidence_single: float = Field(
+        default=0.75,
+        description="Minimum confidence when only audio OR only video detects a trade"
+    )
+    youtube_min_confidence_combined: float = Field(
+        default=0.55,
+        description="Minimum confidence when BOTH audio AND video detect the same trade"
     )
     
     @validator("trading_mode")

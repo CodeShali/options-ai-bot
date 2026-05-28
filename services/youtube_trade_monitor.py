@@ -28,37 +28,59 @@ from loguru import logger
 from config import settings
 
 
-AUDIO_SYSTEM_PROMPT = """You monitor live trading stream transcripts. Extract CONFIRMED trade executions only.
-Look for: entering/exiting positions, buying/selling stocks or options.
-Ignore: analysis, price targets, watchlists, hypotheticals, discussions of past trades.
+AUDIO_SYSTEM_PROMPT = """You are an expert trade execution detector for live trading streams.
 
-Return ONLY valid JSON in this exact format:
-{"trades":[{"symbol":"AAPL","action":"BUY","quantity":100,"price":185.50,
-"type":"STOCK","strike":null,"expiry":null,"confidence":0.85,
-"quote":"...verbatim excerpt proving the trade..."}]}
+Your ONLY job is to identify moments when the trader PHYSICALLY EXECUTES a trade RIGHT NOW.
 
-Rules:
-- action must be exactly: BUY or SELL
-- type must be exactly: STOCK, CALL, or PUT
-- confidence: 0.9+ for clear explicit statements, 0.5-0.89 for likely, <0.5 for uncertain
-- Return {"trades":[]} if no confirmed executions found"""
+CONFIRM a trade ONLY when you hear EXPLICIT execution language such as:
+- "I'm buying / I'm selling [X] right here / right now"
+- "Going long / short [X]"
+- "I just got filled / filled at [price]"
+- "I'm in [X]" (entering a position)
+- "I'm out / taking profits / closed my [X]"
+- "Bought [X] / Sold [X]"
 
-VIDEO_SYSTEM_PROMPT = """You analyze trading screen screenshots from a live stream.
-Detect trade executions visible on screen: order fill confirmations, new positions opened,
-trade tickets just submitted, broker UI showing a just-entered trade.
+DO NOT flag:
+- "I'm watching X" / "I'm waiting for X"
+- "I would buy here" / "if price does X I'll buy"
+- "We're looking at X" / "X is setting up"
+- Explaining past trades or hypothetical setups
+- Any sentence with "if", "when", "could", "should", "might", "would", "watching", "waiting"
 
-Return ONLY valid JSON in this exact format:
-{"trades":[{"symbol":"AAPL","action":"BUY","quantity":100,"price":185.50,
-"type":"STOCK","strike":null,"expiry":null,"confidence":0.85,
-"source_frame":0,"quote":"describe exactly what you see on screen"}]}
+Be VERY conservative. If you are not 90%+ certain it is a live execution, return confidence < 0.75 or omit it.
 
-Rules:
-- action must be exactly: BUY or SELL
-- type must be exactly: STOCK, CALL, or PUT
-- source_frame: 0-indexed frame number where the trade was found
-- Return {"trades":[]} if no trade execution is visible"""
+Return ONLY valid JSON:
+{"trades":[{"symbol":"NQ","action":"BUY","quantity":1,"price":21450.0,
+"type":"FUTURES","strike":null,"expiry":null,"confidence":0.92,
+"quote":"exact verbatim words proving the execution"}]}
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+type options: STOCK, FUTURES, CALL, PUT
+Return {"trades":[]} if no confirmed live execution found."""
+
+VIDEO_SYSTEM_PROMPT = """You analyze trading platform screenshots to detect live trade executions.
+
+CONFIRM a trade ONLY when you see:
+- An order ticket with BUY/SELL just submitted or filled
+- A green/red "Order Filled" or "Position Opened" confirmation popup
+- A new position appearing in the positions panel that wasn't there before
+- A trade blotter showing a brand-new execution
+
+DO NOT flag:
+- Charts, price levels, indicators
+- Watchlists or scanners
+- Open positions that were already there
+- Educational annotations on charts
+
+Be very conservative. Only flag what you are 90%+ certain is a new execution.
+
+Return ONLY valid JSON:
+{"trades":[{"symbol":"NQ","action":"BUY","quantity":1,"price":21450.0,
+"type":"FUTURES","strike":null,"expiry":null,"confidence":0.92,
+"source_frame":0,"quote":"describe exactly what confirms the trade on screen"}]}
+
+Return {"trades":[]} if no confirmed new execution is visible."""
+
+SONNET_MODEL = "claude-sonnet-4-6"
 
 
 class MonitorStats:
@@ -348,7 +370,7 @@ class YouTubeTradeMonitor:
             return []
         try:
             response = self._claude.messages.create(
-                model=HAIKU_MODEL,
+                model=SONNET_MODEL,
                 max_tokens=512,
                 system=[
                     {
@@ -450,7 +472,7 @@ class YouTubeTradeMonitor:
             })
 
             response = self._claude.messages.create(
-                model=HAIKU_MODEL,
+                model=SONNET_MODEL,
                 max_tokens=512,
                 messages=[{"role": "user", "content": content}],
             )
@@ -695,6 +717,23 @@ class YouTubeTradeMonitor:
                 audio_trades, video_trades = await asyncio.gather(audio_detect, video_detect)
 
                 all_trades = self._merge_detections(audio_trades, video_trades)
+
+                # Source-based confidence filtering:
+                # Single source (audio only OR video only) needs 0.75+
+                # Both sources agree needs only 0.55+ (two signals = stronger)
+                combined_key = "audio + video"
+                filtered_trades = []
+                for trade in all_trades:
+                    conf = float(trade.get("confidence") or 0)
+                    src = (trade.get("detected_by") or "").lower()
+                    is_combined = "audio" in src and "video" in src
+                    threshold = settings.youtube_min_confidence_combined if is_combined else settings.youtube_min_confidence_single
+                    if conf >= threshold:
+                        filtered_trades.append(trade)
+                    else:
+                        logger.debug(f"Filtered low-confidence trade: {trade.get('symbol')} {trade.get('action')} conf={conf:.0%} src={src} (need {threshold:.0%})")
+                all_trades = filtered_trades
+
                 self.stats.chunks_processed += 1
                 self.stats.trades_detected += len(all_trades)
                 self.stats.last_chunk_at = datetime.now()
