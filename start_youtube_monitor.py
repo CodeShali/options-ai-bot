@@ -3,15 +3,14 @@
 YouTube Live Trade Monitor — Standalone CLI
 
 Usage:
-    python start_youtube_monitor.py <youtube_url> [--channel CHANNEL_ID] [--model tiny.en]
+    python start_youtube_monitor.py <youtube_url> [--model tiny.en]
 
 Monitors a YouTube video or live stream for trade executions.
-Sends Discord alerts to the configured channel when trades are detected.
+Sends Discord alerts via webhook when trades are detected.
 
-Required .env variables (ONLY these 3 are needed):
+Required .env variables (only 2):
     ANTHROPIC_API_KEY=sk-ant-...
-    DISCORD_BOT_TOKEN=your_bot_token
-    DISCORD_CHANNEL_ID=your_channel_id
+    DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 
 System requirements:
     ffmpeg  (brew install ffmpeg  /  apt install ffmpeg)
@@ -20,22 +19,20 @@ System requirements:
 import os
 import sys
 
-# Load .env FIRST, then fill in dummy values for unused required fields
-# so the shared config/settings.py validation passes without needing
-# Alpaca / OpenAI keys that the YouTube monitor doesn't use.
 from dotenv import load_dotenv
 load_dotenv()
 
+# Dummy values for unused fields in the shared settings validator
 os.environ.setdefault("ALPACA_API_KEY", "not-used")
 os.environ.setdefault("ALPACA_SECRET_KEY", "not-used")
 os.environ.setdefault("OPENAI_API_KEY", "not-used")
+os.environ.setdefault("DISCORD_BOT_TOKEN", "not-used")
+os.environ.setdefault("DISCORD_CHANNEL_ID", "0")
 
-# Now it's safe to import the rest
 import argparse
 import asyncio
 import signal
 
-import discord
 from loguru import logger
 
 from config import settings
@@ -43,7 +40,6 @@ from services.youtube_trade_monitor import YouTubeTradeMonitor, set_monitor
 
 
 async def print_stats_loop(monitor: YouTubeTradeMonitor, stop_event: asyncio.Event):
-    """Print live stats every 60 seconds."""
     while not stop_event.is_set():
         try:
             await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=60)
@@ -62,82 +58,62 @@ async def print_stats_loop(monitor: YouTubeTradeMonitor, stop_event: asyncio.Eve
         )
 
 
-async def run_monitor(youtube_url: str, channel_id: int):
-    """Start Discord client and YouTube trade monitor."""
-    intents = discord.Intents.default()
-    client = discord.Client(intents=intents)
+async def run_monitor(youtube_url: str, webhook_url: str):
     stop_event = asyncio.Event()
-    monitor: YouTubeTradeMonitor = None
+    monitor = YouTubeTradeMonitor(webhook_url=webhook_url)
+    set_monitor(monitor)
 
-    @client.event
-    async def on_ready():
-        nonlocal monitor
-        logger.info(f"Discord connected as {client.user}")
+    # Send start notification via webhook
+    import aiohttp
+    import discord
+    try:
+        async with aiohttp.ClientSession() as session:
+            webhook = discord.Webhook.from_url(webhook_url, session=session)
+            await webhook.send(
+                f"📡 **YouTube Trade Monitor started**\n"
+                f"Model: `{settings.youtube_whisper_model}` | AI: Claude Haiku\n"
+                f"Stream: {youtube_url}"
+            )
+        logger.info("✅ Discord webhook connected")
+    except Exception as e:
+        logger.error(f"❌ Webhook failed: {e}")
+        logger.error("Check your DISCORD_WEBHOOK_URL in .env")
+        return
 
-        channel = client.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await client.fetch_channel(channel_id)
-            except Exception as e:
-                logger.error(f"Cannot access Discord channel {channel_id}: {e}")
-                stop_event.set()
-                await client.close()
-                return
+    result = await monitor.start(youtube_url)
+    if not result["success"]:
+        logger.error(f"Monitor failed to start: {result['message']}")
+        return
 
-        logger.info(f"Discord channel: #{getattr(channel, 'name', channel_id)}")
+    kind = "LIVE" if result.get("is_live") else "VIDEO"
+    logger.info(f"✅ [{kind}] {result['message']}")
+    logger.info(f"📺 {youtube_url}")
+    logger.info("━" * 60)
+    logger.info("Monitoring for trades... Press Ctrl+C to stop.")
+    logger.info("━" * 60)
 
-        monitor = YouTubeTradeMonitor(discord_channel=channel)
-        set_monitor(monitor)
-
-        result = await monitor.start(youtube_url)
-        if not result["success"]:
-            logger.error(f"Monitor failed to start: {result['message']}")
-            stop_event.set()
-            await client.close()
-            return
-
-        kind = "LIVE" if result.get("is_live") else "VIDEO"
-        logger.info(f"✅ [{kind}] {result['message']}")
-        logger.info(f"📺 {youtube_url}")
-        logger.info("━" * 60)
-        logger.info("Monitoring for trades... Press Ctrl+C to stop.")
-        logger.info("━" * 60)
-
-        await channel.send(
-            f"📡 **YouTube Trade Monitor started**\n"
-            f"Type: `{kind}` | Model: `{settings.youtube_whisper_model}`\n"
-            f"Stream: {youtube_url}"
-        )
-
-        asyncio.create_task(print_stats_loop(monitor, stop_event))
+    asyncio.create_task(print_stats_loop(monitor, stop_event))
 
     async def shutdown():
-        if monitor:
-            logger.info("Stopping monitor…")
-            result = await monitor.stop()
-            s = result.get("stats", {})
-            logger.info("━" * 60)
-            logger.info("Final session stats:")
-            logger.info(f"  Duration:        {s.get('elapsed', 'N/A')}")
-            logger.info(f"  Chunks:          {s.get('chunks_processed', 0)}")
-            logger.info(f"  Audio API calls: {s.get('api_calls_audio', 0)}")
-            logger.info(f"  Video API calls: {s.get('api_calls_video', 0)}")
-            logger.info(f"  Trades found:    {s.get('trades_detected', 0)}")
-            logger.info(f"  Alerts sent:     {s.get('trades_sent', 0)}")
-            logger.info(f"  Deduplicated:    {s.get('trades_deduplicated', 0)}")
-            logger.info(f"  Est. cost:       ${s.get('estimated_cost_usd', 0):.4f}")
-            logger.info("━" * 60)
-
+        result = await monitor.stop()
+        s = result.get("stats", {})
+        logger.info("━" * 60)
+        logger.info("Final session stats:")
+        logger.info(f"  Duration:        {s.get('elapsed', 'N/A')}")
+        logger.info(f"  Chunks:          {s.get('chunks_processed', 0)}")
+        logger.info(f"  Audio API calls: {s.get('api_calls_audio', 0)}")
+        logger.info(f"  Video API calls: {s.get('api_calls_video', 0)}")
+        logger.info(f"  Trades found:    {s.get('trades_detected', 0)}")
+        logger.info(f"  Alerts sent:     {s.get('trades_sent', 0)}")
+        logger.info(f"  Est. cost:       ${s.get('estimated_cost_usd', 0):.4f}")
+        logger.info("━" * 60)
         set_monitor(None)
-        if not client.is_closed():
-            await client.close()
+        stop_event.set()
 
     loop = asyncio.get_event_loop()
 
     def handle_signal():
-        if not stop_event.is_set():
-            stop_event.set()
-            asyncio.create_task(shutdown())
+        asyncio.create_task(shutdown())
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -145,62 +121,40 @@ async def run_monitor(youtube_url: str, channel_id: int):
         except NotImplementedError:
             pass
 
-    try:
-        await client.start(settings.discord_bot_token)
-    except discord.LoginFailure:
-        logger.error("Invalid DISCORD_BOT_TOKEN — check your .env file")
-        sys.exit(1)
-    except Exception as e:
-        if not stop_event.is_set():
-            logger.error(f"Discord client error: {e}")
+    await stop_event.wait()
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="YouTube Trade Monitor → Discord Alerts",
+        description="YouTube Trade Monitor → Discord Alerts (via Webhook)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python start_youtube_monitor.py "https://youtube.com/live/JMyf02fkh6w"
   python start_youtube_monitor.py "https://www.youtube.com/watch?v=XXXXX"
-  python start_youtube_monitor.py "https://youtube.com/live/..." --channel 123456789
   python start_youtube_monitor.py "https://youtube.com/live/..." --model tiny.en
         """,
     )
     parser.add_argument("url", help="YouTube URL (live stream or regular video)")
     parser.add_argument(
-        "--channel",
-        type=int,
-        default=None,
-        help="Discord channel ID (overrides DISCORD_CHANNEL_ID from .env)",
-    )
-    parser.add_argument(
         "--model",
         choices=["tiny.en", "base.en", "small.en"],
         default=None,
-        help="Whisper model size (default: base.en). tiny.en is faster; small.en is most accurate.",
+        help="Whisper model (default: base.en). tiny.en=fastest, small.en=most accurate",
     )
     args = parser.parse_args()
 
     if "youtube.com" not in args.url and "youtu.be" not in args.url:
-        print("Error: URL must be a YouTube link (youtube.com or youtu.be)", file=sys.stderr)
+        print("Error: Must be a YouTube URL", file=sys.stderr)
+        sys.exit(1)
+
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
+    if not webhook_url:
+        print("Error: DISCORD_WEBHOOK_URL not set in .env", file=sys.stderr)
         sys.exit(1)
 
     if args.model:
         settings.youtube_whisper_model = args.model
-
-    channel_id = args.channel
-    if not channel_id:
-        raw = settings.youtube_monitor_channel_id or settings.discord_channel_id
-        try:
-            channel_id = int(raw)
-        except (TypeError, ValueError):
-            print(
-                "Error: No channel ID found.\n"
-                "Set DISCORD_CHANNEL_ID in your .env file, or pass --channel <id>.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
 
     logger.remove()
     logger.add(
@@ -214,15 +168,13 @@ Examples:
     logger.info("🎬  YouTube Trade Monitor  →  Discord Alerts")
     logger.info("━" * 60)
     logger.info(f"URL:      {args.url}")
-    logger.info(f"Channel:  {channel_id}")
     logger.info(f"Whisper:  {settings.youtube_whisper_model} (local, free)")
     logger.info(f"AI:       Claude Haiku (audio + video)")
+    logger.info(f"Discord:  Webhook")
     logger.info(f"Est cost: ~$0.10/hr")
     logger.info("━" * 60)
-    logger.info("Whisper model downloads ~145MB on first run, then cached.")
-    logger.info("━" * 60)
 
-    asyncio.run(run_monitor(args.url, channel_id))
+    asyncio.run(run_monitor(args.url, webhook_url))
 
 
 if __name__ == "__main__":

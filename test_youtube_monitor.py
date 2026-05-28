@@ -27,7 +27,7 @@ logger.add(sys.stdout, level="INFO", format="<green>{time:HH:mm:ss}</green> | <l
 def test_env():
     logger.info("TEST 1: Checking environment variables...")
     missing = []
-    for key in ["ANTHROPIC_API_KEY", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID"]:
+    for key in ["ANTHROPIC_API_KEY", "DISCORD_WEBHOOK_URL"]:
         val = os.getenv(key, "")
         if not val or val == "your_key_here":
             missing.append(key)
@@ -123,48 +123,28 @@ async def test_claude_detection():
         return False
 
 
-# ─── Test 6: Discord connection ───────────────────────────────────────────────
+# ─── Test 6: Discord webhook ─────────────────────────────────────────────────
 
 async def test_discord():
-    logger.info("TEST 6: Testing Discord connection...")
+    logger.info("TEST 6: Testing Discord webhook...")
     try:
+        import aiohttp
         import discord
-        intents = discord.Intents.default()
-        client = discord.Client(intents=intents)
-        connected = asyncio.Event()
-        channel_name = "unknown"
 
-        @client.event
-        async def on_ready():
-            nonlocal channel_name
-            channel_id = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
-            channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
-            channel_name = getattr(channel, "name", str(channel_id))
-            connected.set()
-            await client.close()
-
-        async def run():
-            await client.start(os.getenv("DISCORD_BOT_TOKEN", ""))
-
-        task = asyncio.create_task(run())
-        try:
-            await asyncio.wait_for(connected.wait(), timeout=15)
-            logger.info(f"  ✅ Discord connected | channel: #{channel_name}")
-            return True
-        except asyncio.TimeoutError:
-            logger.error("  ❌ Discord connection timed out — check DISCORD_BOT_TOKEN")
+        webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
+        if not webhook_url:
+            logger.error("  ❌ DISCORD_WEBHOOK_URL not set in .env")
             return False
-        finally:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-    except discord.LoginFailure:
-        logger.error("  ❌ Invalid DISCORD_BOT_TOKEN")
-        return False
+
+        async with aiohttp.ClientSession() as session:
+            webhook = discord.Webhook.from_url(webhook_url, session=session)
+            await webhook.send("✅ YouTube Trade Monitor test — connection working!")
+
+        logger.info("  ✅ Webhook works! Check Discord for a test message.")
+        return True
     except Exception as e:
-        logger.error(f"  ❌ Discord error: {e}")
+        logger.error(f"  ❌ Webhook failed: {e}")
+        logger.error("     Check DISCORD_WEBHOOK_URL in your .env")
         return False
 
 

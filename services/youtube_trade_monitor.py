@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+import aiohttp
 import anthropic
 import discord
 from loguru import logger
@@ -101,8 +102,9 @@ class YouTubeTradeMonitor:
       6. Detections are merged, deduplicated, and sent as Discord embeds.
     """
 
-    def __init__(self, discord_channel: discord.abc.Messageable):
+    def __init__(self, discord_channel: discord.abc.Messageable = None, webhook_url: str = None):
         self.discord_channel = discord_channel
+        self.webhook_url = webhook_url
         self.youtube_url: Optional[str] = None
         self.state = "idle"
         self._stop_event = asyncio.Event()
@@ -599,7 +601,18 @@ class YouTubeTradeMonitor:
     async def _send_alert(self, trade: dict):
         try:
             embed = self._build_embed(trade)
-            await self.discord_channel.send(embed=embed)
+
+            if self.webhook_url:
+                # Send via webhook (no bot needed)
+                async with aiohttp.ClientSession() as session:
+                    webhook = discord.Webhook.from_url(self.webhook_url, session=session)
+                    await webhook.send(embed=embed)
+            elif self.discord_channel:
+                await self.discord_channel.send(embed=embed)
+            else:
+                logger.error("No Discord webhook or channel configured")
+                return
+
             self.stats.trades_sent += 1
             logger.info(f"Alert sent: {trade.get('action')} {trade.get('symbol')} "
                         f"(confidence={trade.get('confidence', 0):.0%})")
@@ -690,7 +703,12 @@ class YouTubeTradeMonitor:
                     )
                     logger.error(msg)
                     try:
-                        await self.discord_channel.send(msg)
+                        if self.webhook_url:
+                            async with aiohttp.ClientSession() as session:
+                                webhook = discord.Webhook.from_url(self.webhook_url, session=session)
+                                await webhook.send(msg)
+                        elif self.discord_channel:
+                            await self.discord_channel.send(msg)
                     except Exception:
                         pass
                     break
