@@ -230,13 +230,17 @@ class YouTubeTradeMonitor:
     # Stream info
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _ytdlp_base(self) -> list:
+        """Base yt-dlp args including cookie auth if configured."""
+        args = ["yt-dlp", "--no-playlist", "--no-warnings"]
+        browser = getattr(settings, "youtube_cookies_browser", "") or os.getenv("YOUTUBE_COOKIES_BROWSER", "")
+        if browser:
+            args += ["--cookies-from-browser", browser]
+        return args
+
     async def _get_stream_info(self, url: str) -> dict:
         """Use yt-dlp to retrieve stream metadata and best stream URLs."""
-        # Metadata
-        meta_cmd = [
-            "yt-dlp", "--dump-json", "--no-playlist",
-            "--no-warnings", url,
-        ]
+        meta_cmd = self._ytdlp_base() + ["--dump-json", url]
         proc = await asyncio.create_subprocess_exec(
             *meta_cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -259,10 +263,8 @@ class YouTubeTradeMonitor:
 
         # Best video URL (720p or lower to keep ffmpeg fast)
         video_url = audio_url
-        vid_cmd = [
-            "yt-dlp", "--get-url", "--no-playlist", "--no-warnings",
-            "-f", "best[height<=720]/bestvideo[height<=720]/best",
-            url,
+        vid_cmd = self._ytdlp_base() + [
+            "--get-url", "-f", "best[height<=720]/bestvideo[height<=720]/best", url,
         ]
         try:
             proc2 = await asyncio.create_subprocess_exec(
@@ -286,11 +288,7 @@ class YouTubeTradeMonitor:
 
     async def _refresh_audio_url(self) -> str:
         """Re-resolve audio URL (live stream URLs rotate ~every 6 hours)."""
-        cmd = [
-            "yt-dlp", "--get-url", "--no-playlist", "--no-warnings",
-            "-f", "bestaudio/best",
-            self.youtube_url,
-        ]
+        cmd = self._ytdlp_base() + ["--get-url", "-f", "bestaudio/best", self.youtube_url]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,

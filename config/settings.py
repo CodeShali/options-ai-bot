@@ -177,6 +177,10 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000, description="FastAPI port")
 
     # YouTube Trade Monitor
+    youtube_cookies_browser: str = Field(
+        default="safari",
+        description="Browser to pull YouTube cookies from: safari, chrome, firefox, edge"
+    )
     youtube_monitor_channel_id: str = Field(
         default="",
         description="Discord channel ID for YouTube trade alerts (defaults to discord_channel_id)"
