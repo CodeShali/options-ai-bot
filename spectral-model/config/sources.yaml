@@ -1,0 +1,667 @@
+# Spectral-IAM Training Data Sources Catalog
+
+rfcs:
+  ldap:
+    - id: RFC4510
+      title: "Lightweight Directory Access Protocol (LDAP): Technical Specification Road Map"
+      url: "https://www.rfc-editor.org/rfc/rfc4510.txt"
+      domain: ldap
+    - id: RFC4511
+      title: "Lightweight Directory Access Protocol (LDAP): The Protocol"
+      url: "https://www.rfc-editor.org/rfc/rfc4511.txt"
+      domain: ldap
+    - id: RFC4512
+      title: "Lightweight Directory Access Protocol (LDAP): Directory Information Models"
+      url: "https://www.rfc-editor.org/rfc/rfc4512.txt"
+      domain: ldap
+    - id: RFC4513
+      title: "Lightweight Directory Access Protocol (LDAP): Authentication Methods and Security Mechanisms"
+      url: "https://www.rfc-editor.org/rfc/rfc4513.txt"
+      domain: ldap
+    - id: RFC4514
+      title: "Lightweight Directory Access Protocol (LDAP): String Representation of Distinguished Names"
+      url: "https://www.rfc-editor.org/rfc/rfc4514.txt"
+      domain: ldap
+    - id: RFC4515
+      title: "Lightweight Directory Access Protocol (LDAP): String Representation of Search Filters"
+      url: "https://www.rfc-editor.org/rfc/rfc4515.txt"
+      domain: ldap
+    - id: RFC4516
+      title: "Lightweight Directory Access Protocol (LDAP): Uniform Resource Locator"
+      url: "https://www.rfc-editor.org/rfc/rfc4516.txt"
+      domain: ldap
+    - id: RFC4517
+      title: "Lightweight Directory Access Protocol (LDAP): Syntaxes and Matching Rules"
+      url: "https://www.rfc-editor.org/rfc/rfc4517.txt"
+      domain: ldap
+    - id: RFC4518
+      title: "Lightweight Directory Access Protocol (LDAP): Internationalized String Preparation"
+      url: "https://www.rfc-editor.org/rfc/rfc4518.txt"
+      domain: ldap
+    - id: RFC4519
+      title: "Lightweight Directory Access Protocol (LDAP): Schema for User Applications"
+      url: "https://www.rfc-editor.org/rfc/rfc4519.txt"
+      domain: ldap
+    - id: RFC4522
+      title: "Lightweight Directory Access Protocol (LDAP): The Binary Encoding Option"
+      url: "https://www.rfc-editor.org/rfc/rfc4522.txt"
+      domain: ldap
+    - id: RFC4523
+      title: "Lightweight Directory Access Protocol (LDAP): Schema Definitions for X.509 Certificates"
+      url: "https://www.rfc-editor.org/rfc/rfc4523.txt"
+      domain: ldap
+    - id: RFC4524
+      title: "COSINE LDAP/X.500 Schema"
+      url: "https://www.rfc-editor.org/rfc/rfc4524.txt"
+      domain: ldap
+    - id: RFC4525
+      title: "Lightweight Directory Access Protocol (LDAP): Modify-Increment Extension"
+      url: "https://www.rfc-editor.org/rfc/rfc4525.txt"
+      domain: ldap
+    - id: RFC4526
+      title: "Lightweight Directory Access Protocol (LDAP): Absolute True and False Filters"
+      url: "https://www.rfc-editor.org/rfc/rfc4526.txt"
+      domain: ldap
+    - id: RFC4529
+      title: "Requesting Attributes by Object Class in the Lightweight Directory Access Protocol"
+      url: "https://www.rfc-editor.org/rfc/rfc4529.txt"
+      domain: ldap
+    - id: RFC3062
+      title: "LDAP Password Modify Extended Operation"
+      url: "https://www.rfc-editor.org/rfc/rfc3062.txt"
+      domain: ldap
+    - id: RFC3672
+      title: "Subentries in the Lightweight Directory Access Protocol (LDAP)"
+      url: "https://www.rfc-editor.org/rfc/rfc3672.txt"
+      domain: ldap
+    - id: RFC3673
+      title: "Lightweight Directory Access Protocol version 3: All Operational Attributes"
+      url: "https://www.rfc-editor.org/rfc/rfc3673.txt"
+      domain: ldap
+    - id: RFC2696
+      title: "LDAP Control Extension for Simple Paged Results Manipulation"
+      url: "https://www.rfc-editor.org/rfc/rfc2696.txt"
+      domain: ldap
+    - id: RFC2891
+      title: "LDAP Control Extension for Server Side Sorting of Search Results"
+      url: "https://www.rfc-editor.org/rfc/rfc2891.txt"
+      domain: ldap
+    - id: RFC4533
+      title: "The Lightweight Directory Access Protocol (LDAP) Content Synchronization Operation"
+      url: "https://www.rfc-editor.org/rfc/rfc4533.txt"
+      domain: ldap
+    - id: RFC3909
+      title: "Lightweight Directory Access Protocol (LDAP) Cancel Operation"
+      url: "https://www.rfc-editor.org/rfc/rfc3909.txt"
+      domain: ldap
+
+  saml:
+    - id: SAML2Core
+      title: "SAML 2.0 Core Specification"
+      url: "https://docs.oasis-open.org/security/saml/v2.0/saml-core-2.0-os.pdf"
+      domain: saml
+    - id: SAML2Bindings
+      title: "SAML 2.0 Bindings Specification"
+      url: "https://docs.oasis-open.org/security/saml/v2.0/saml-bindings-2.0-os.pdf"
+      domain: saml
+    - id: SAML2Profiles
+      title: "SAML 2.0 Profiles Specification"
+      url: "https://docs.oasis-open.org/security/saml/v2.0/saml-profiles-2.0-os.pdf"
+      domain: saml
+
+  oauth:
+    - id: RFC6749
+      title: "The OAuth 2.0 Authorization Framework"
+      url: "https://www.rfc-editor.org/rfc/rfc6749.txt"
+      domain: oauth
+    - id: RFC6750
+      title: "The OAuth 2.0 Authorization Framework: Bearer Token Usage"
+      url: "https://www.rfc-editor.org/rfc/rfc6750.txt"
+      domain: oauth
+    - id: RFC7009
+      title: "OAuth 2.0 Token Revocation"
+      url: "https://www.rfc-editor.org/rfc/rfc7009.txt"
+      domain: oauth
+    - id: RFC7519
+      title: "JSON Web Token (JWT)"
+      url: "https://www.rfc-editor.org/rfc/rfc7519.txt"
+      domain: oauth
+    - id: RFC7521
+      title: "Assertion Framework for OAuth 2.0 Client Authentication and Authorization Grants"
+      url: "https://www.rfc-editor.org/rfc/rfc7521.txt"
+      domain: oauth
+    - id: RFC7523
+      title: "JSON Web Token (JWT) Profile for OAuth 2.0 Client Authentication and Authorization Grants"
+      url: "https://www.rfc-editor.org/rfc/rfc7523.txt"
+      domain: oauth
+    - id: RFC7636
+      title: "Proof Key for Code Exchange by OAuth Public Clients"
+      url: "https://www.rfc-editor.org/rfc/rfc7636.txt"
+      domain: oauth
+    - id: RFC7591
+      title: "OAuth 2.0 Dynamic Client Registration Protocol"
+      url: "https://www.rfc-editor.org/rfc/rfc7591.txt"
+      domain: oauth
+    - id: RFC7592
+      title: "OAuth 2.0 Dynamic Client Registration Management Protocol"
+      url: "https://www.rfc-editor.org/rfc/rfc7592.txt"
+      domain: oauth
+    - id: RFC8414
+      title: "OAuth 2.0 Authorization Server Metadata"
+      url: "https://www.rfc-editor.org/rfc/rfc8414.txt"
+      domain: oauth
+    - id: RFC8628
+      title: "OAuth 2.0 Device Authorization Grant"
+      url: "https://www.rfc-editor.org/rfc/rfc8628.txt"
+      domain: oauth
+    - id: RFC8693
+      title: "OAuth 2.0 Token Exchange"
+      url: "https://www.rfc-editor.org/rfc/rfc8693.txt"
+      domain: oauth
+    - id: RFC9068
+      title: "JSON Web Token (JWT) Profile for OAuth 2.0 Access Tokens"
+      url: "https://www.rfc-editor.org/rfc/rfc9068.txt"
+      domain: oauth
+    - id: RFC9101
+      title: "The OAuth 2.0 Authorization Framework: JWT-Secured Authorization Request (JAR)"
+      url: "https://www.rfc-editor.org/rfc/rfc9101.txt"
+      domain: oauth
+    - id: RFC9126
+      title: "OAuth 2.0 Pushed Authorization Requests"
+      url: "https://www.rfc-editor.org/rfc/rfc9126.txt"
+      domain: oauth
+    - id: RFC9449
+      title: "OAuth 2.0 Demonstrating Proof of Possession (DPoP)"
+      url: "https://www.rfc-editor.org/rfc/rfc9449.txt"
+      domain: oauth
+    - id: RFC7662
+      title: "OAuth 2.0 Token Introspection"
+      url: "https://www.rfc-editor.org/rfc/rfc7662.txt"
+      domain: oauth
+
+  oidc:
+    - id: OpenIDCore
+      title: "OpenID Connect Core 1.0"
+      url: "https://openid.net/specs/openid-connect-core-1_0.html"
+      domain: oidc
+    - id: OpenIDDiscovery
+      title: "OpenID Connect Discovery 1.0"
+      url: "https://openid.net/specs/openid-connect-discovery-1_0.html"
+      domain: oidc
+    - id: OpenIDRegistration
+      title: "OpenID Connect Dynamic Client Registration 1.0"
+      url: "https://openid.net/specs/openid-connect-registration-1_0.html"
+      domain: oidc
+    - id: OpenIDSessionManagement
+      title: "OpenID Connect Session Management 1.0"
+      url: "https://openid.net/specs/openid-connect-session-1_0.html"
+      domain: oidc
+    - id: OpenIDFrontChannelLogout
+      title: "OpenID Connect Front-Channel Logout 1.0"
+      url: "https://openid.net/specs/openid-connect-frontchannel-1_0.html"
+      domain: oidc
+    - id: OpenIDBackChannelLogout
+      title: "OpenID Connect Back-Channel Logout 1.0"
+      url: "https://openid.net/specs/openid-connect-backchannel-1_0.html"
+      domain: oidc
+
+  scim:
+    - id: RFC7642
+      title: "System for Cross-domain Identity Management: Definitions, Overview, Concepts, and Requirements"
+      url: "https://www.rfc-editor.org/rfc/rfc7642.txt"
+      domain: scim
+    - id: RFC7643
+      title: "System for Cross-domain Identity Management: Core Schema"
+      url: "https://www.rfc-editor.org/rfc/rfc7643.txt"
+      domain: scim
+    - id: RFC7644
+      title: "System for Cross-domain Identity Management: Protocol"
+      url: "https://www.rfc-editor.org/rfc/rfc7644.txt"
+      domain: scim
+
+  kerberos:
+    - id: RFC4120
+      title: "The Kerberos Network Authentication Service (V5)"
+      url: "https://www.rfc-editor.org/rfc/rfc4120.txt"
+      domain: kerberos
+    - id: RFC4121
+      title: "The Kerberos Version 5 GSS-API Mechanism"
+      url: "https://www.rfc-editor.org/rfc/rfc4121.txt"
+      domain: kerberos
+    - id: RFC6113
+      title: "A Generalized Framework for Kerberos Pre-Authentication"
+      url: "https://www.rfc-editor.org/rfc/rfc6113.txt"
+      domain: kerberos
+    - id: RFC4556
+      title: "Public Key Cryptography for Initial Authentication in Kerberos (PKINIT)"
+      url: "https://www.rfc-editor.org/rfc/rfc4556.txt"
+      domain: kerberos
+    - id: RFC6806
+      title: "Kerberos Principal Name Canonicalization and Cross-Realm Referrals"
+      url: "https://www.rfc-editor.org/rfc/rfc6806.txt"
+      domain: kerberos
+
+  webauthn:
+    - id: WebAuthn2
+      title: "Web Authentication: An API for accessing Public Key Credentials Level 2"
+      url: "https://www.w3.org/TR/webauthn-2/"
+      domain: webauthn_fido
+    - id: CTAP2
+      title: "Client to Authenticator Protocol (CTAP) 2"
+      url: "https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticator-protocol-v2.0-ps-20190130.html"
+      domain: webauthn_fido
+
+  tls_crypto:
+    - id: RFC8446
+      title: "The Transport Layer Security (TLS) Protocol Version 1.3"
+      url: "https://www.rfc-editor.org/rfc/rfc8446.txt"
+      domain: compliance
+    - id: RFC7515
+      title: "JSON Web Signature (JWS)"
+      url: "https://www.rfc-editor.org/rfc/rfc7515.txt"
+      domain: oauth
+    - id: RFC7516
+      title: "JSON Web Encryption (JWE)"
+      url: "https://www.rfc-editor.org/rfc/rfc7516.txt"
+      domain: oauth
+    - id: RFC7517
+      title: "JSON Web Key (JWK)"
+      url: "https://www.rfc-editor.org/rfc/rfc7517.txt"
+      domain: oauth
+    - id: RFC7518
+      title: "JSON Web Algorithms (JWA)"
+      url: "https://www.rfc-editor.org/rfc/rfc7518.txt"
+      domain: oauth
+
+  sasl:
+    - id: RFC4422
+      title: "Simple Authentication and Security Layer (SASL)"
+      url: "https://www.rfc-editor.org/rfc/rfc4422.txt"
+      domain: ldap
+    - id: RFC4616
+      title: "The PLAIN Simple Authentication and Security Layer (SASL) Mechanism"
+      url: "https://www.rfc-editor.org/rfc/rfc4616.txt"
+      domain: ldap
+    - id: RFC5801
+      title: "Using Generic Security Service Application Program Interface (GSS-API) Mechanisms in SASL"
+      url: "https://www.rfc-editor.org/rfc/rfc5801.txt"
+      domain: ldap
+
+nist:
+  - id: SP800-63B
+    title: "Digital Identity Guidelines: Authentication and Lifecycle Management"
+    url: "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-63b.pdf"
+    domain: compliance
+  - id: SP800-63C
+    title: "Digital Identity Guidelines: Federation and Assertions"
+    url: "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-63c.pdf"
+    domain: compliance
+  - id: SP800-63A
+    title: "Digital Identity Guidelines: Enrollment and Identity Proofing"
+    url: "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-63a.pdf"
+    domain: compliance
+  - id: SP800-207
+    title: "Zero Trust Architecture"
+    url: "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-207.pdf"
+    domain: zero_trust
+  - id: SP800-162
+    title: "Guide to Attribute Based Access Control (ABAC) Definition and Considerations"
+    url: "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-162.pdf"
+    domain: compliance
+  - id: SP800-53r5
+    title: "Security and Privacy Controls for Information Systems and Organizations"
+    url: "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-53r5.pdf"
+    domain: compliance
+  - id: SP800-178
+    title: "A Comparison of Attribute Based Access Control (ABAC) Standards for Data Service Applications"
+    url: "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-178.pdf"
+    domain: compliance
+
+cis:
+  - id: CIS-AD
+    title: "CIS Microsoft Active Directory Benchmark"
+    url: "https://www.cisecurity.org/benchmark/microsoft_windows_server"
+    domain: active_directory
+  - id: CIS-AzureAD
+    title: "CIS Microsoft Azure Foundations Benchmark"
+    url: "https://www.cisecurity.org/benchmark/azure"
+    domain: azure_ad_entra
+  - id: CIS-AWS
+    title: "CIS Amazon Web Services Foundations Benchmark"
+    url: "https://www.cisecurity.org/benchmark/amazon_web_services"
+    domain: aws_iam
+  - id: CIS-Okta
+    title: "CIS Okta Benchmark"
+    url: "https://www.cisecurity.org/benchmark/okta"
+    domain: okta
+
+iso:
+  - id: ISO27001
+    title: "ISO/IEC 27001:2022 Information Security Management Systems"
+    url: "https://www.iso.org/standard/27001"
+    domain: compliance
+  - id: ISO27002
+    title: "ISO/IEC 27002:2022 Information Security Controls"
+    url: "https://www.iso.org/standard/75652.html"
+    domain: compliance
+
+vendors:
+  microsoft:
+    - name: "Microsoft Entra ID (Azure AD) Documentation"
+      base_url: "https://learn.microsoft.com/en-us/entra/identity/"
+      domain: azure_ad_entra
+      crawl_depth: 3
+      allowed_path_prefix: "/en-us/entra/"
+    - name: "Microsoft Active Directory Documentation"
+      base_url: "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/"
+      domain: active_directory
+      crawl_depth: 3
+      allowed_path_prefix: "/en-us/windows-server/identity/"
+    - name: "Microsoft MSAL Documentation"
+      base_url: "https://learn.microsoft.com/en-us/entra/msal/"
+      domain: azure_ad_entra
+      crawl_depth: 2
+      allowed_path_prefix: "/en-us/entra/msal/"
+
+  okta:
+    - name: "Okta Developer Documentation"
+      base_url: "https://developer.okta.com/docs/guides/"
+      domain: okta
+      crawl_depth: 3
+      allowed_path_prefix: "/docs/"
+    - name: "Okta API Reference"
+      base_url: "https://developer.okta.com/docs/reference/"
+      domain: okta
+      crawl_depth: 2
+      allowed_path_prefix: "/docs/reference/"
+
+  aws:
+    - name: "AWS IAM User Guide"
+      base_url: "https://docs.aws.amazon.com/IAM/latest/UserGuide/"
+      domain: aws_iam
+      crawl_depth: 3
+      allowed_path_prefix: "/IAM/latest/"
+    - name: "AWS IAM Identity Center"
+      base_url: "https://docs.aws.amazon.com/singlesignon/latest/userguide/"
+      domain: aws_iam
+      crawl_depth: 3
+      allowed_path_prefix: "/singlesignon/"
+
+  google:
+    - name: "Google Cloud IAM Documentation"
+      base_url: "https://cloud.google.com/iam/docs/"
+      domain: gcp_iam
+      crawl_depth: 3
+      allowed_path_prefix: "/iam/docs/"
+    - name: "Google Workspace Admin SDK"
+      base_url: "https://developers.google.com/admin-sdk/directory"
+      domain: gcp_iam
+      crawl_depth: 2
+      allowed_path_prefix: "/admin-sdk/"
+
+  ping_identity:
+    - name: "PingFederate Documentation"
+      base_url: "https://docs.pingidentity.com/pingfederate/"
+      domain: sso_federation
+      crawl_depth: 3
+      allowed_path_prefix: "/pingfederate/"
+    - name: "PingDirectory Documentation"
+      base_url: "https://docs.pingidentity.com/pingdirectory/"
+      domain: ldap
+      crawl_depth: 2
+      allowed_path_prefix: "/pingdirectory/"
+
+  cyberark:
+    - name: "CyberArk Privileged Access Manager Documentation"
+      base_url: "https://docs.cyberark.com/PAS/"
+      domain: pam
+      crawl_depth: 3
+      allowed_path_prefix: "/PAS/"
+
+  hashicorp:
+    - name: "HashiCorp Vault Documentation"
+      base_url: "https://developer.hashicorp.com/vault/docs/"
+      domain: pam
+      crawl_depth: 3
+      allowed_path_prefix: "/vault/docs/"
+
+  sailpoint:
+    - name: "SailPoint IdentityNow Documentation"
+      base_url: "https://documentation.sailpoint.com/identitynow/"
+      domain: iga_provisioning
+      crawl_depth: 3
+      allowed_path_prefix: "/identitynow/"
+
+  forgerock:
+    - name: "ForgeRock Identity Platform Documentation"
+      base_url: "https://backstage.forgerock.com/docs/idm/7/"
+      domain: iga_provisioning
+      crawl_depth: 3
+      allowed_path_prefix: "/docs/"
+
+stack_overflow:
+  tags:
+    - tag: ldap
+      domain: ldap
+      min_score: 5
+    - tag: active-directory
+      domain: active_directory
+      min_score: 5
+    - tag: azure-active-directory
+      domain: azure_ad_entra
+      min_score: 5
+    - tag: oauth-2.0
+      domain: oauth
+      min_score: 5
+    - tag: openid-connect
+      domain: oidc
+      min_score: 5
+    - tag: saml
+      domain: saml
+      min_score: 5
+    - tag: kerberos
+      domain: kerberos
+      min_score: 5
+    - tag: jwt
+      domain: oauth
+      min_score: 5
+    - tag: scim
+      domain: scim
+      min_score: 3
+    - tag: webauthn
+      domain: webauthn_fido
+      min_score: 3
+    - tag: okta
+      domain: okta
+      min_score: 5
+    - tag: aws-iam
+      domain: aws_iam
+      min_score: 5
+    - tag: google-cloud-iam
+      domain: gcp_iam
+      min_score: 3
+    - tag: azure-ad-b2c
+      domain: azure_ad_entra
+      min_score: 5
+    - tag: msal
+      domain: azure_ad_entra
+      min_score: 5
+    - tag: pkce
+      domain: oauth
+      min_score: 3
+    - tag: keycloak
+      domain: sso_federation
+      min_score: 5
+    - tag: sso
+      domain: sso_federation
+      min_score: 5
+    - tag: adfs
+      domain: active_directory
+      min_score: 5
+    - tag: identity
+      domain: compliance
+      min_score: 10
+    - tag: hashicorp-vault
+      domain: pam
+      min_score: 5
+    - tag: cyberark
+      domain: pam
+      min_score: 3
+    - tag: fido2
+      domain: webauthn_fido
+      min_score: 3
+    - tag: privileged-access-management
+      domain: pam
+      min_score: 3
+    - tag: zero-trust
+      domain: zero_trust
+      min_score: 3
+
+reddit:
+  subreddits:
+    - name: r/sysadmin
+      domain: active_directory
+      filter_keywords:
+        - ldap
+        - active directory
+        - azure ad
+        - kerberos
+        - authentication
+    - name: r/networking
+      domain: sso_federation
+      filter_keywords:
+        - saml
+        - oauth
+        - ldap
+        - radius
+        - authentication
+    - name: r/netsec
+      domain: compliance
+      filter_keywords:
+        - identity
+        - iam
+        - zero trust
+        - privileged access
+        - mfa
+    - name: r/devops
+      domain: aws_iam
+      filter_keywords:
+        - iam
+        - oauth
+        - secrets
+        - service accounts
+        - rbac
+    - name: r/aws
+      domain: aws_iam
+      filter_keywords:
+        - iam
+        - identity center
+        - role
+        - permission
+        - scp
+    - name: r/azure
+      domain: azure_ad_entra
+      filter_keywords:
+        - entra
+        - azure ad
+        - conditional access
+        - pim
+        - identity
+    - name: r/k8s
+      domain: nhi
+      filter_keywords:
+        - rbac
+        - service account
+        - oidc
+        - workload identity
+        - secrets
+    - name: r/okta
+      domain: okta
+      filter_keywords:
+        - okta
+        - workforce
+        - customer identity
+        - lifecycle
+        - scim
+    - name: r/cybersecurity
+      domain: compliance
+      filter_keywords:
+        - iam
+        - zero trust
+        - identity
+        - privileged access
+        - mfa
+
+github:
+  orgs:
+    - org: OpenIDConnect
+      domain: oidc
+      filter_topics: [openid, oauth, oidc]
+    - org: oauth-xx
+      domain: oauth
+      filter_topics: [oauth, oauth2]
+    - org: keycloak
+      domain: sso_federation
+      filter_topics: [keycloak, iam, sso]
+    - org: hashicorp
+      domain: pam
+      repo: vault
+      filter_topics: [vault, secrets, iam]
+    - org: spiffe
+      domain: nhi
+      filter_topics: [spiffe, spire, workload-identity]
+    - org: open-policy-agent
+      domain: compliance
+      filter_topics: [opa, policy, authorization]
+    - org: ory
+      domain: oauth
+      filter_topics: [oauth2, oidc, hydra, kratos]
+    - org: dexidp
+      domain: oidc
+      filter_topics: [oidc, oauth2, dex]
+
+cve_cwe:
+  cwe_filter:
+    - id: CWE-287
+      name: "Improper Authentication"
+      domain: compliance
+    - id: CWE-306
+      name: "Missing Authentication for Critical Function"
+      domain: compliance
+    - id: CWE-522
+      name: "Insufficiently Protected Credentials"
+      domain: pam
+    - id: CWE-862
+      name: "Missing Authorization"
+      domain: compliance
+    - id: CWE-863
+      name: "Incorrect Authorization"
+      domain: compliance
+    - id: CWE-384
+      name: "Session Fixation"
+      domain: oauth
+    - id: CWE-290
+      name: "Authentication Bypass by Spoofing"
+      domain: compliance
+    - id: CWE-295
+      name: "Improper Certificate Validation"
+      domain: compliance
+    - id: CWE-345
+      name: "Insufficient Verification of Data Authenticity"
+      domain: saml
+    - id: CWE-347
+      name: "Improper Verification of Cryptographic Signature"
+      domain: oauth
+  keywords:
+    - ldap injection
+    - saml bypass
+    - oauth token theft
+    - kerberoasting
+    - golden ticket
+    - privilege escalation
+    - authentication bypass
+    - session hijacking
+    - jwt attack
+    - oidc misconfiguration
+    - scim injection
+    - directory traversal iam
