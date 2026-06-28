@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "kalshi": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@newyorkcompute/kalshi-mcp@latest"],
+      "env": {
+        "KALSHI_API_KEY": "${KALSHI_API_KEY}",
+        "KALSHI_PRIVATE_KEY": "${KALSHI_PRIVATE_KEY}"
+      }
+    }
+  }
+}
